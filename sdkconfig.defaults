@@ -1,0 +1,38 @@
+# Build Arduino as an ESP-IDF component so this is consumed by ESP-IDF startup
+# and the second-stage bootloader, rather than being an application-only define.
+CONFIG_AUTOSTART_ARDUINO=y
+
+# ESP-IDF 4.4 names this setting per target. This is the ESP32-C3 equivalent
+# of CONFIG_RTC_CLK_SRC_EXT_CRYS used by newer ESP-IDF releases.
+# CONFIG_ESP32C3_RTC_CLK_SRC_INT_RC is not set
+CONFIG_ESP32C3_RTC_CLK_SRC_EXT_CRYS=y
+# CONFIG_ESP32C3_RTC_CLK_SRC_EXT_OSC is not set
+# CONFIG_ESP32C3_RTC_CLK_SRC_INT_8MD256 is not set
+# Reset before a collapsing 3.3 V rail reaches the flash's unsupported region.
+# CONFIG_ESP32C3_BROWNOUT_DET_LVL_SEL_7 is not set
+# CONFIG_ESP32C3_BROWNOUT_DET_LVL_SEL_6 is not set
+# CONFIG_ESP32C3_BROWNOUT_DET_LVL_SEL_5 is not set
+CONFIG_ESP32C3_BROWNOUT_DET_LVL_SEL_4=y
+# CONFIG_ESP32C3_BROWNOUT_DET_LVL_SEL_3 is not set
+# CONFIG_ESP32C3_BROWNOUT_DET_LVL_SEL_2 is not set
+
+# A blocked Arduino loop must panic, write a diagnostic core dump, and reboot.
+CONFIG_ESP_TASK_WDT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
+
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_BIN=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_CHECK_BOOT=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=8
+
+CONFIG_FREERTOS_HZ=1000
+
+# Match the XIAO ESP32-C3 module and preserve the logger's existing OTA/data
+# partition addresses.
+# CONFIG_ESPTOOLPY_FLASHSIZE_2MB is not set
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
