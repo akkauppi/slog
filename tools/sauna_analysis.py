@@ -261,6 +261,46 @@ def _plot_html(figure: Any, div_id: str, include_js: bool = False) -> str:
                                                  "modeBarButtonsToRemove": ["lasso2d", "select2d"]})
 
 
+def _theme_script() -> str:
+    """Return browser-side Plotly theming synchronized with OS color scheme."""
+    return r"""<script>
+(()=>{
+ const media=window.matchMedia('(prefers-color-scheme: dark)');
+ function applyPlotTheme(){
+  const dark=media.matches;
+  const colors=dark
+   ? {text:'#F5EFE7',muted:'#BDB4AA',plot:'#211E1B',grid:'#3B3631',zero:'#8F8377',hover:'#302A25'}
+   : {text:'#2B2926',muted:'#706960',plot:'#FCFAF7',grid:'#E8E2DA',zero:'#968B7D',hover:'#FFFDF9'};
+  document.documentElement.dataset.theme=dark?'dark':'light';
+  document.querySelectorAll('.plotly-graph-div').forEach(div=>{
+   const layout=div.layout||{};
+   const update={
+    'font.color':colors.text,'plot_bgcolor':colors.plot,'paper_bgcolor':'rgba(0,0,0,0)',
+    'hoverlabel.bgcolor':colors.hover,'hoverlabel.bordercolor':colors.grid,'hoverlabel.font.color':colors.text,
+    'legend.font.color':colors.text
+   };
+   Object.keys(layout).filter(key=>/^xaxis\d*$|^yaxis\d*$/.test(key)).forEach(key=>{
+    update[key+'.gridcolor']=colors.grid;update[key+'.zerolinecolor']=colors.zero;
+    update[key+'.tickfont.color']=colors.text;update[key+'.title.font.color']=colors.text;
+   });
+   (layout.updatemenus||[]).forEach((menu,index)=>{
+    update[`updatemenus[${index}].bgcolor`]=colors.plot;
+    update[`updatemenus[${index}].bordercolor`]=colors.grid;
+    update[`updatemenus[${index}].font.color`]=colors.text;
+   });
+   (layout.shapes||[]).forEach((shape,index)=>{
+    if(shape.line?.dash==='dot') update[`shapes[${index}].line.color`]=colors.muted;
+   });
+   Plotly.relayout(div,update);
+  });
+ }
+ requestAnimationFrame(applyPlotTheme);
+ media.addEventListener?.('change',applyPlotTheme);
+ window.applySaunaPlotTheme=applyPlotTheme;
+})();
+</script>"""
+
+
 def _base_layout(figure: Any, title: str, height: int = 430) -> None:
     figure.update_layout(
         title={"text": title, "x": 0.01, "xanchor": "left"}, height=height,
@@ -434,7 +474,7 @@ def export_run_html(run: Run, destination: Path) -> None:
     document = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(run.label)} · Sauna thermal report</title>
 <style>
-:root{{--ink:#2b2926;--muted:#706960;--paper:#f5f0e8;--card:#fffdfa;--accent:#d1495b;--line:#ded5c9}}
+:root{{--ink:#2b2926;--muted:#706960;--paper:#f5f0e8;--card:#fffdfa;--accent:#d1495b;--line:#ded5c9;color-scheme:light dark}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 Inter,ui-sans-serif,system-ui,sans-serif}}
 header,main,footer{{max-width:1240px;margin:auto;padding:28px}}header{{padding-top:54px}}.eyebrow{{color:var(--accent);font-weight:750;letter-spacing:.1em;text-transform:uppercase}}
 h1{{font:700 clamp(2.2rem,6vw,5.2rem)/.96 Georgia,serif;margin:.2em 0}}h2{{font:650 1.5rem Georgia,serif;margin:0 0 12px}}.lead{{max-width:780px;font-size:1.17rem;color:var(--muted)}}
@@ -442,7 +482,8 @@ h1{{font:700 clamp(2.2rem,6vw,5.2rem)/.96 Georgia,serif;margin:.2em 0}}h2{{font:
 .split{{display:grid;grid-template-columns:1.3fr .7fr;gap:20px}}table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}th,td{{padding:10px;border-bottom:1px solid var(--line);text-align:left}}thead th{{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em}}
 .note{{border-left:4px solid #e9c46a;padding:10px 16px;background:#fff8dd}}.warning{{border-left-color:var(--accent);background:#fff0f1}}footer{{color:var(--muted);font-size:.9rem}}
 @media(max-width:780px){{header,main,footer{{padding:20px}}.meta,.grid,.split{{grid-template-columns:1fr}}.card{{padding:12px}}}}
-@media(prefers-color-scheme:dark){{:root{{--ink:#f5efe7;--muted:#bdb4aa;--paper:#171513;--card:#211e1b;--line:#3b3631}}.note{{background:#302a19}}.warning{{background:#351e22}}}}
+@media(prefers-color-scheme:dark){{:root{{--ink:#f5efe7;--muted:#bdb4aa;--paper:#171513;--card:#211e1b;--line:#3b3631}}.note{{background:#302a19}}.warning{{background:#351e22}}.js-plotly-plot .main-svg{{background:transparent!important}}.js-plotly-plot .plotly .bg{{fill:var(--card)!important}}.js-plotly-plot text{{fill:var(--ink)!important}}.js-plotly-plot .gridlayer path{{stroke:var(--line)!important}}.js-plotly-plot .zerolinelayer path{{stroke:#8f8377!important}}.js-plotly-plot .updatemenu-item-rect,.js-plotly-plot .updatemenu-header{{fill:var(--card)!important;stroke:var(--line)!important}}}}
+.modebar{{background:transparent!important}}.modebar-btn path{{fill:var(--muted)!important}}.modebar-btn:hover path{{fill:var(--ink)!important}}
 @media print{{body{{background:white}}.card,.pill{{box-shadow:none;break-inside:avoid}}.modebar{{display:none!important}}}}
 </style></head><body><header><div class="eyebrow">Vertical thermal study</div><h1>{html.escape(run.label)}</h1>
 <p class="lead">Eight temperatures at 20 cm intervals, with raw measurements kept distinct from derived views. Time across a power interruption is deliberately unknown.</p>
@@ -456,7 +497,7 @@ h1{{font:700 clamp(2.2rem,6vw,5.2rem)/.96 Georgia,serif;margin:.2em 0}}h2{{font:
 <section class="card"><h2>Rapid-warming candidates</h2><p class="note">Centered two-minute slopes from the upper four probes; threshold is the larger of 1 °C/min or median + 3 MAD. Candidates within five minutes are merged. This does not identify a cause.</p><table><thead><tr><th>Observed time</th><th>Composite rate</th><th>Detection threshold</th></tr></thead><tbody>{event_rows}</tbody></table></section>
 <section class="card"><h2>Data integrity and logger health</h2><div class="grid"><div><strong>Degraded samples</strong><br>{degraded_count} / {len(run.points)}</div><div><strong>RTC fallback observed</strong><br>{'Yes' if fallback else 'No'}</div><div><strong>ESP32 internal temperature</strong><br>{f'{min(chip_values):.1f}–{max(chip_values):.1f} °C' if chip_values else 'Not recorded'}</div></div><table><thead><tr><th>Session</th><th>Reset</th><th>RTC at start</th><th>State</th></tr></thead><tbody>{session_health}</tbody></table>{('<ul>'+warnings+'</ul>') if warnings else '<p>No parser or chain warnings.</p>'}</section>
 </main><footer>Generated from CRC-validated sauna logger data. “Observed time” excludes unknown power-off duration. Relative height uses probe 1 as 0 cm.</footer>
-<script id="profile-data" type="application/json">{report_json}</script><script>
+<script id="profile-data" type="application/json">{report_json}</script>{_theme_script()}<script>
 const profileData=JSON.parse(document.getElementById('profile-data').textContent);
 document.getElementById('timeline-chart').on('plotly_hover',event=>{{
  const x=event.points[0].x;let best=0,delta=Infinity;profileData.times.forEach((t,i)=>{{const d=Math.abs(t-x);if(d<delta){{best=i;delta=d}}}});
@@ -526,8 +567,8 @@ def export_comparison_html(runs: list[Run], destination: Path) -> None:
                     f"<td>{f'{peak:.1f} °C' if peak is not None else '—'}</td><td>{f'{spread:.1f} °C' if spread is not None else '—'}</td>"
                     f"<td>{len(analysis['rapid_warming_candidates'])}</td><td>{sum(p['missing_samples'] for p in analysis['probes'])}</td></tr>")
     document = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sauna run comparison</title><style>body{{margin:auto;max-width:1240px;padding:32px;background:#f5f0e8;color:#2b2926;font:16px/1.5 Inter,system-ui}}h1{{font:700 clamp(2.4rem,6vw,5rem)/1 Georgia,serif}}section{{background:#fffdfa;border:1px solid #ded5c9;border-radius:18px;padding:22px;margin:20px 0;overflow:auto}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px;border-bottom:1px solid #ded5c9;text-align:left}}@media(max-width:700px){{body{{padding:14px}}section{{padding:10px}}}}</style></head>
+<title>Sauna run comparison</title><style>:root{{--ink:#2b2926;--paper:#f5f0e8;--card:#fffdfa;--line:#ded5c9;--muted:#706960;color-scheme:light dark}}body{{margin:auto;max-width:1240px;padding:32px;background:var(--paper);color:var(--ink);font:16px/1.5 Inter,system-ui}}h1{{font:700 clamp(2.4rem,6vw,5rem)/1 Georgia,serif}}section{{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;margin:20px 0;overflow:auto}}table{{width:100%;border-collapse:collapse}}th,td{{padding:12px;border-bottom:1px solid var(--line);text-align:left}}.modebar{{background:transparent!important}}.modebar-btn path{{fill:var(--muted)!important}}.modebar-btn:hover path{{fill:var(--ink)!important}}@media(prefers-color-scheme:dark){{:root{{--ink:#f5efe7;--paper:#171513;--card:#211e1b;--line:#3b3631;--muted:#bdb4aa}}.js-plotly-plot .main-svg{{background:transparent!important}}.js-plotly-plot .plotly .bg{{fill:var(--card)!important}}.js-plotly-plot text{{fill:var(--ink)!important}}.js-plotly-plot .gridlayer path{{stroke:var(--line)!important}}.js-plotly-plot .zerolinelayer path{{stroke:#8f8377!important}}.js-plotly-plot .updatemenu-item-rect,.js-plotly-plot .updatemenu-header{{fill:var(--card)!important;stroke:var(--line)!important}}}}@media(max-width:700px){{body{{padding:14px}}section{{padding:10px}}}}</style></head>
 <body><div style="color:#d1495b;font-weight:750;text-transform:uppercase;letter-spacing:.1em">Thermal comparison</div><h1>{len(runs)} sauna runs</h1><p>Root segments are aligned at their firmware 40 °C trigger. Power-off duration is omitted and marked as an unknown gap in individual reports.</p>
 <section>{_plot_html(overview, 'comparison-chart', True)}</section><section>{_plot_html(heatmaps, 'comparison-heatmaps')}</section><section><h2>Comparable outcomes</h2><table><thead><tr><th>Run</th><th>Observed duration</th><th>Overall peak</th><th>Max top−bottom</th><th>Rapid candidates</th><th>Missing values</th></tr></thead><tbody>{''.join(rows)}</tbody></table></section>
-<section><h2>Interpretation limits</h2><p>These comparisons describe measured temperature at relative heights. They do not include humidity, heater state, door openings, occupancy, or the unknown duration of power interruptions.</p></section></body></html>"""
+<section><h2>Interpretation limits</h2><p>These comparisons describe measured temperature at relative heights. They do not include humidity, heater state, door openings, occupancy, or the unknown duration of power interruptions.</p></section>{_theme_script()}</body></html>"""
     destination.write_text(document, encoding="utf-8")

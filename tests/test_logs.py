@@ -89,6 +89,8 @@ class LogTests(unittest.TestCase):
             logs.export_html(session, html_path)
             self.assertIn("probe_1_c", csv_path.read_text())
             self.assertIn("Sauna session 7", html_path.read_text())
+            self.assertIn("applySaunaPlotTheme", html_path.read_text())
+            self.assertIn("prefers-color-scheme:dark", html_path.read_text())
             self.assertIsNone(re.search(r'<script[^>]+src=["\']https?://', html_path.read_text()))
             report = logs.session_report(session)
             self.assertIn("vertical_gradient_c_per_m", report)
@@ -156,6 +158,7 @@ class AnalysisTests(unittest.TestCase):
             document = output.read_text()
             self.assertIn("Thermal comparison", document)
             self.assertIn("140 cm", document)
+            self.assertIn("applySaunaPlotTheme", document)
             self.assertIsNone(re.search(r'<script[^>]+src=["\']https?://', document))
 
 

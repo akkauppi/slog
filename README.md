@@ -8,6 +8,12 @@ The repository contains the embedded logger, USB extraction tools, CRC-safe log
 parser, and self-contained interactive analysis reports. Development invariants
 and verification commands for coding agents are summarized in `AGENTS.md`.
 
+An anonymized first full sauna run is retained as a reproducible example. See
+[`docs/runs/2026-08-16-session-1.md`](docs/runs/2026-08-16-session-1.md) for the
+observations and commands used to regenerate its CSV and interactive report.
+
+[![Eight probe temperatures from the first full sauna run](data/2026-08-16-sauna/session-1-main-chart.png)](docs/runs/2026-08-16-session-1.md)
+
 ## Wiring
 
 The firmware uses XIAO pin `D2` for the 1-Wire data line. Connect every sensor
