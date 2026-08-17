@@ -10,14 +10,16 @@ design remains in [`community-project-plan.md`](community-project-plan.md).
 - Repository: `akkauppi/saunan`
 - Remote base: `origin/main` at `3a43bb8`
 - Documentation branch: `agent/community-roadmap`
-  - remote tip: `a8c9a8e`
+  - published on `origin/agent/community-roadmap`
   - local focused-roadmap commit: `976afad`
-  - the safe-retention alignment in this handoff is also committed locally
-  - both local documentation commits remain unpublished until GitHub
-    authentication is repaired
+  - the safe-retention alignment and this publication handoff follow it
+  - draft PR: [#2, Define a focused roadmap for the community sauna
+    logger](https://github.com/akkauppi/saunan/pull/2)
 - Firmware branch: `agent/safe-rolling-retention`
   - local commit: `e4039b8` (`Implement safe rolling retention`)
-  - based on `origin/main`; not pushed and no pull request exists
+  - published on `origin/agent/safe-rolling-retention`
+  - draft PR: [#3, Implement power-safe rolling retention for sauna
+    logs](https://github.com/akkauppi/saunan/pull/3)
 
 The earlier `agent/document-example-sauna-run` branch belongs to merged PR #1
 and must not be reused.
@@ -90,40 +92,35 @@ and invalid duplicate/orphan/branched catalogs. They do not emulate LittleFS or
 NVS failures. No firmware was uploaded and no serial or hardware test was run.
 Hardware fault-injection around each journal boundary remains a release gate.
 
-## Publication blocker
+## Publication status
 
-Nothing was pushed in this session. `gh auth status` reports that the stored
-token for `akkauppi` is invalid. Re-authenticate before attempting either
-branch push or draft pull request:
-
-```sh
-gh auth login -h github.com
-```
-
-Do not assume the earlier draft-PR attempt succeeded; confirm on GitHub after
-authentication and avoid creating duplicates.
+GitHub CLI authentication is restored for `akkauppi` using SSH. Both branches
+are pushed and the two draft pull requests above are open against `main`.
+`main` itself was not changed directly. PR #2 is documentation-only; PR #3
+keeps hardware verification explicitly pending and must remain a draft until
+that work is recorded.
 
 ## Start here next session
 
-1. Inspect both local branches and the two intended review scopes:
+1. Review the two draft pull requests and their checks:
 
    ```sh
-   git status -sb
-   git log --oneline --decorate --all -8
-   git diff origin/main...agent/safe-rolling-retention
-   git diff origin/agent/community-roadmap...agent/community-roadmap
+   gh pr view 2
+   gh pr checks 2
+   gh pr view 3
+   gh pr checks 3
    ```
 
-2. Re-authenticate `gh`, push `agent/community-roadmap`, and create or update
-   its documentation-only draft pull request. Confirm no duplicate PR exists.
-3. Push `agent/safe-rolling-retention` and open a separate draft pull request
-   whose sole outcome is safe rolling retention. Include the automated checks
-   above and explicitly mark hardware verification pending.
-4. Before marking the firmware PR ready, test on a XIAO ESP32-C3 with seeded
+2. Merge the documentation PR after its rendered Markdown and roadmap scope are
+   accepted. Then update the firmware branch from the resulting `main` if
+   GitHub reports it behind or conflicted.
+3. Before marking the firmware PR ready, test on a XIAO ESP32-C3 with seeded
    complete, linked, interrupted, and corrupt logs. Cut power before/after each
    pending-journal, file-removal, audit-write, and journal-clear boundary;
    confirm no active/interrupted/corrupt run is removed and the intended run
    resumes only at the next start attempt.
+4. Record the hardware results in PR #3, rerun its automated checks, and mark it
+   ready only when the retention behavior is verified.
 5. After Slice 1 is reviewed and merged, branch from updated `main` for Slice 2
    generic probe commissioning. Do not mix commissioning, web flashing,
    analysis, or publication work into the retention PR.
