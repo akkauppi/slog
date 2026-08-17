@@ -2,116 +2,133 @@
 
 Last updated: 2026-08-18, Europe/Helsinki.
 
-This is the rolling handoff for the community-project work. Update it when a
-session changes the active branch, pull request, completed slice, or immediate
-next action. The longer-term design remains in
-[`community-project-plan.md`](community-project-plan.md).
+This is the rolling handoff for the community-project work. The longer-term
+design remains in [`community-project-plan.md`](community-project-plan.md).
 
 ## Repository snapshot
 
 - Repository: `akkauppi/saunan`
 - Remote base: `origin/main` at `3a43bb8`
-- Active branch: `agent/community-roadmap`
-- Roadmap commit: `88c4c40` (`Document community project roadmap`)
-- Remote branch: `origin/agent/community-roadmap`
-- Local and remote branch were synchronized with a clean worktree before this
-  handoff was added.
-- No pull request exists for `agent/community-roadmap` as of this update.
+- Documentation branch: `agent/community-roadmap`
+  - remote tip: `a8c9a8e`
+  - local focused-roadmap commit: `976afad`
+  - the safe-retention alignment in this handoff is also committed locally
+  - both local documentation commits remain unpublished until GitHub
+    authentication is repaired
+- Firmware branch: `agent/safe-rolling-retention`
+  - local commit: `e4039b8` (`Implement safe rolling retention`)
+  - based on `origin/main`; not pushed and no pull request exists
 
 The earlier `agent/document-example-sauna-run` branch belongs to merged PR #1
-and must not be reused for new work.
+and must not be reused.
 
-## Completed
+## Chosen direction
 
-- Added the community roadmap covering the reference build, generic probe
-  commissioning, browser flashing and management, local analysis, metadata,
-  public catalog, governance, licenses, and release gates.
-- Adopted a one-primary-outcome rule for each slice and pull request: ship and
-  verify the narrow outcome first, then discuss independently deliverable
-  extensions.
-- Split raw-session preservation from generic probe commissioning. Preservation
-  is now Slice 1; commissioning follows only after that focused change is
-  merged.
-- Recorded hot-start/public-sauna behavior as a first-class observation mode,
-  including automatic stabilization estimation, left-censored threshold
-  semantics, and separate heating/steady-state/cooling coverage.
-- Chose one offline-first portal for building instructions, released firmware,
-  commissioning, retrieval, and local analysis. Publishing is an explicit
-  online action into a small private inbox followed by manual review and a
-  generated static catalog; contributors do not file GitHub issues or create
-  Zenodo records.
-- Assigned Zenodo the narrower role of periodic, curated dataset snapshots with
-  versioned archival citations rather than one archive deposit per submitted
-  run.
-- Kept the initial data model focused on temperatures and minimum comparison
-  metadata. An occupancy switch and structured experience questions are
-  deferred; the first release allows only an optional observation note for that
-  context.
-- Recorded canonical SI storage with metric and imperial input/display.
-- Recorded the Git workflow: one short-lived branch and draft PR per coherent
-  slice, with no long-lived redesign branch.
-- Linked the roadmap from the README and clarified that public raw `.slog`
-  files retain stable probe ROM identifiers.
-- Reviewed the documentation for conflicts with `AGENTS.md` and checked it for
-  trailing whitespace and Git diff errors.
+- Work in small, short-lived branches with one primary outcome per pull
+  request. Finish and merge the retention slice before starting generic probe
+  commissioning.
+- Do one thing well first: trustworthy eight-height temperature capture and
+  comparison. An occupancy switch and structured experience questions remain
+  deferred; a later submission may have one optional observation note.
+- Treat hot starts as first-class measurements. Heating time is unknown when it
+  was not observed; analysis uses left-censored thresholds and separate
+  heating, steady-state, and cooling coverage.
+- Build one installable offline-first portal for instructions, released
+  firmware, commissioning, retrieval, and local analysis. Publishing is an
+  explicit online action.
+- Start publication with a narrow private inbox, manual review, and a generated
+  static catalog rather than contributor accounts or a general CRUD portal.
+  Publish periodic curated dataset snapshots to Zenodo for durable DOI-backed
+  archiving; do not make each contributor create a Zenodo record.
 
-No firmware, log-format, analysis, build, partition, or hardware state was
-changed. Firmware tests were not run because the branch changes documentation
-only.
+## Slice 1 implementation status
 
-## Publication status
+Safe rolling retention is implemented and committed locally on
+`agent/safe-rolling-retention`:
 
-The branch and commit are safely pushed. Draft PR creation was attempted but
-did not complete:
+- The device is a bounded rolling store. It reserves 128 KiB immediately before
+  a new session, enough for the maximum encoded 12-hour run plus filesystem
+  margin.
+- Retention happens only at that pre-start boundary. There is no automatic
+  deletion at mount, during an active session, or after session completion.
+- Only the oldest fully validated finalized logical run is eligible. Firmware
+  validates the header, ordered blocks, block CRCs, record count, footer, and
+  continuation catalog. Interrupted, corrupt, orphaned, branched, and probable
+  continuation data is not retired.
+- Linked segments are removed newest first under a CRC-protected NVS run
+  journal. A power cut leaves a valid prefix; the same run is resumed before a
+  later start even when enough space was already freed.
+- Persistent status reports reserve state, deleted run/segment counts, last
+  deletion, pending run/segment, session-ID high-water mark, catalog state,
+  audit health, and refusal reason. Session IDs are not consumed repeatedly
+  while a hot logger remains blocked.
+- Manual deletion refuses to orphan a continuation or operate while an
+  automatic retirement is pending. Explicit formatting resets continuation and
+  retention state; LittleFS is still never formatted automatically.
+- There is no standalone field-visible LED signal. A final refusal is visible
+  through the USB event/status interface, so important unattended measurements
+  still require a preflight status check.
 
-1. The GitHub app returned an internal error after timing out.
-2. `gh pr create` reached GitHub but its GraphQL endpoint returned HTTP 503 on
-   two attempts.
-3. A subsequent GitHub PR search confirmed that no duplicate or partial PR was
-   created.
+Verification completed:
 
-GitHub CLI authentication for account `akkauppi` was verified successfully.
-The failure appeared to be a transient GitHub service problem rather than a
-repository or authentication problem.
+```text
+.venv/bin/python -m unittest discover -s tests -v
+11 tests passed
 
-The intended PR is:
+.venv/bin/pio run
+SUCCESS
+RAM 14,568 / 327,680 bytes (4.4%)
+Flash 320,084 / 1,310,720 bytes (24.4%)
 
-- Base: `main`
-- Head: `agent/community-roadmap`
-- Draft: yes
-- Title: `Document community project roadmap`
-- Scope: `README.md` and the roadmap/status documentation only
+git diff --check
+passed
+```
 
-The PR description should summarize the roadmap and branch workflow, explain
-that it establishes reviewable boundaries for later firmware/web/data work,
-state that runtime behavior is unchanged, and list the documentation checks.
+The host fixtures cover selection of the oldest complete run, whole-chain
+newest-first ordering, protected/incomplete runs, a finalized power-cut prefix,
+and invalid duplicate/orphan/branched catalogs. They do not emulate LittleFS or
+NVS failures. No firmware was uploaded and no serial or hardware test was run.
+Hardware fault-injection around each journal boundary remains a release gate.
+
+## Publication blocker
+
+Nothing was pushed in this session. `gh auth status` reports that the stored
+token for `akkauppi` is invalid. Re-authenticate before attempting either
+branch push or draft pull request:
+
+```sh
+gh auth login -h github.com
+```
+
+Do not assume the earlier draft-PR attempt succeeded; confirm on GitHub after
+authentication and avoid creating duplicates.
 
 ## Start here next session
 
-1. Confirm the checkout is on `agent/community-roadmap` and clean:
+1. Inspect both local branches and the two intended review scopes:
 
    ```sh
    git status -sb
-   git log -3 --oneline --decorate
+   git log --oneline --decorate --all -8
+   git diff origin/main...agent/safe-rolling-retention
+   git diff origin/agent/community-roadmap...agent/community-roadmap
    ```
 
-2. Confirm GitHub still has no PR for the branch, then retry creating the draft
-   PR. Prefer the connected GitHub app; use `gh pr create` if necessary.
-3. Review the rendered Markdown and PR diff. Merge only after the roadmap is
-   acceptable; there are no firmware checks required for this documentation-only
-   PR.
-4. Fetch the merged `main`, then create a new short-lived branch for the first
-   implementation slice. Do not continue implementation on the roadmap branch.
-5. Start Slice 1 with the preservation fix: remove unverified automatic session
-   deletion and make insufficient reserve block a new session without deleting
-   existing raw logs. Make preservation under storage pressure the PR's only
-   primary outcome.
-6. After Slice 1 is reviewed and merged, start a new branch for Slice 2 generic
-   probe commissioning. Do not combine its NVS mapping or USB protocol work
-   with the preservation PR.
+2. Re-authenticate `gh`, push `agent/community-roadmap`, and create or update
+   its documentation-only draft pull request. Confirm no duplicate PR exists.
+3. Push `agent/safe-rolling-retention` and open a separate draft pull request
+   whose sole outcome is safe rolling retention. Include the automated checks
+   above and explicitly mark hardware verification pending.
+4. Before marking the firmware PR ready, test on a XIAO ESP32-C3 with seeded
+   complete, linked, interrupted, and corrupt logs. Cut power before/after each
+   pending-journal, file-removal, audit-write, and journal-clear boundary;
+   confirm no active/interrupted/corrupt run is removed and the intended run
+   resumes only at the next start attempt.
+5. After Slice 1 is reviewed and merged, branch from updated `main` for Slice 2
+   generic probe commissioning. Do not mix commissioning, web flashing,
+   analysis, or publication work into the retention PR.
 
-All later work—including commissioning, the offline-first portal, analysis,
-private intake, and static publication—must continue to preserve ROM-based
-identity, the fixed eight-probe geometry, power-cut safety, CRC validation,
-explicit interruption metadata, manual filesystem formatting, Wi-Fi disabled,
-RTC diagnostics, and the committed partition layout.
+All later work must preserve ROM-based sensor identity, the fixed eight-probe
+geometry, 10-second sampling, power-cut recovery, CRC validation, explicit
+unknown power gaps, manual filesystem formatting, disabled Wi-Fi, RTC
+diagnostics, and the committed partition layout.

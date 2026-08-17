@@ -50,8 +50,20 @@ properties:
 - Valid CRC-protected blocks survive incomplete writes. Interruption and
   unknown-duration power gaps remain explicit, and analysis never invents the
   missing time.
-- LittleFS is never formatted automatically. Raw device logs are never deleted
-  until a transfer CRC has validated and a local raw copy has been preserved.
+- LittleFS is never formatted automatically. Raw `.slog` files remain the
+  source of truth, while device flash is explicitly a bounded rolling store and
+  not the permanent archive.
+- Immediately before starting a new session, the logger requires a 128 KiB
+  full-session reserve. It may make that reserve only by retiring the oldest
+  logical run whose linked segments all have fully CRC-valid contents and valid
+  finalized footers. An interrupted run and any run selected as a probable
+  continuation are protected.
+- Linked segments are retired newest first under a persistent run-level journal
+  so a power cut leaves a valid prefix and retirement can resume immediately
+  before a later start attempt. Retention never deletes on mount, during an
+  active session, or when a session finishes. Persistent status and audit fields
+  expose every retirement, pending work, and refusal. If no eligible run can
+  make the reserve, logging is refused without deleting another file.
 - Wi-Fi stays disabled. Browser management and publishing happen over USB and
   on the user's computer.
 - RTC selection remains an ESP-IDF configuration concern. The external
@@ -73,9 +85,9 @@ Before inviting community builders, the following blockers need correction:
 - The documented mapping utility expects ROM-address temperature telemetry that
   the current firmware does not emit. There is no separate discovery firmware
   environment, so the documented commissioning path is not currently usable.
-- Firmware automatically deletes the oldest session to reclaim its reserve,
-  without knowing whether that session was downloaded. This conflicts with the
-  raw-data preservation rule.
+- The `origin/main` firmware has only a simple oldest-session cleanup. The
+  bounded, run-aware replacement is implemented on the unmerged Slice 1 branch
+  recorded in the current handoff and still needs review and hardware testing.
 - Setup assumes a pre-existing repository virtual environment and omits a full
   BOM, mechanical design, tested harness, cross-platform installation path,
   safety guide, troubleshooting flow, and calibration procedure.
@@ -115,16 +127,32 @@ coherent delivery slice. Do not accumulate the redesign on a long-lived
 - Link it from the main README.
 - Treat later slices as planned behavior, not existing capability.
 
-### Slice 1: preserve every raw session
+### Slice 1: safe rolling retention
 
-- Remove automatic retention deletion. Keep a reserve large enough for the
-  maximum 12-hour session and refuse to start a new run when that reserve is
-  unavailable. Manual deletion remains an explicit post-download operation.
-- Make the refusal and available storage clear in status output, and add tests
-  proving that low storage never deletes a completed session.
+- Require 128 KiB free immediately before opening a session, enough for a full
+  12-hour recording plus filesystem margin. Retire runs only at this pre-start
+  boundary; never delete on mount, during an active session, or at session
+  finish.
+- Select only the oldest eligible logical run. Every linked segment must have
+  fully CRC-valid blocks and a valid finalized footer. Treat continuation-linked
+  segments as one unit, and protect interrupted sessions and probable
+  continuations.
+- Retire linked segments newest first. Persist a pending run and segment before
+  each removal, reconcile the audit after a power cut, and resume that same run
+  only at the next pre-start reserve check.
+- Persist and report deleted run/segment counts, last deleted identifiers, a
+  pending retirement, the session-ID high-water mark, catalog validity, audit
+  health, reserve readiness, and the last refusal reason.
+- Refuse the new session and preserve everything present when the catalog or
+  audit is unsafe, no eligible run exists, or the reserve still cannot be made.
+  Manual deletion remains an explicit operation after local preservation.
 
-The primary outcome of this slice is preservation under storage pressure. It
-does not change probe commissioning, the log format, or the browser workflow.
+The primary outcome of this slice is predictable bounded retention without
+ever sacrificing an active, interrupted, ambiguous, or probable-continuation
+run. It does not change probe commissioning, the log format, or the browser
+workflow. Because the device cannot know whether a completed run was archived,
+the operating guidance still calls for CRC-validated downloads after every
+measurement.
 
 ### Slice 2: generic probe commissioning
 
@@ -404,7 +432,12 @@ Additional automated coverage will include:
 
 - NVS configuration validation, duplicate/invalid ROMs, and power cuts at every
   staging and activation point;
-- proof that low storage never automatically deletes a session;
+- exact 128 KiB reserve boundaries, oldest-complete-run selection, linked-run
+  retirement, and conservative refusal for invalid, oversized, interrupted, or
+  otherwise ineligible catalogs;
+- newest-first deletion and persistent journal/audit recovery at every
+  power-cut boundary, plus proof that retention never removes files on mount,
+  during an active run, or at session finish;
 - Python/TypeScript golden parity for v1/v2 files, the real example log, every
   truncation offset, bad CRCs, missing probes, and continuation chains;
 - mocked Web Serial with arbitrary chunks, interleaved telemetry, permission
@@ -434,5 +467,7 @@ port still requires explicit user intent.
 - Humidity or other new sensing hardware.
 - An occupancy switch, structured occupancy tracking, or a structured
   experience survey. Exact-location maps and health claims are also excluded.
-- Automatic deletion, automatic filesystem formatting, or unattended
-  destructive recovery operations.
+- Retention anywhere except the bounded pre-start policy: no deletion of an
+  active, interrupted, ambiguous, or probable-continuation run, and no deletion
+  when its catalog or persistent audit cannot be trusted. Automatic filesystem
+  formatting and other unattended destructive recovery remain excluded.
