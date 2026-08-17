@@ -3,11 +3,12 @@
 #include <Arduino.h>
 #include <FS.h>
 
+#include "probe_config.h"
 #include "retention_policy.h"
 
 namespace sauna {
 
-constexpr uint8_t kSensorCount = 8;
+constexpr uint8_t kSensorCount = static_cast<uint8_t>(kProbeCount);
 constexpr uint32_t kSampleIntervalMs = 10000;
 constexpr uint16_t kRecordsPerBlock = 60;
 constexpr uint16_t kPretriggerRecords = 60;
@@ -41,9 +42,16 @@ enum class ContinuationKind : uint8_t {
 
 class SessionLogger {
  public:
+  using ExtraCommandHandler = bool (*)(const String& command);
+
   bool begin();
   void addSample(const SensorReading& reading);
-  void handleSerial();
+  void handleSerial(ExtraCommandHandler extraHandler = nullptr);
+  bool setProbeConfiguration(const ProbeMapping* mapping);
+  void setProbeConfigStatus(ProbeConfigState state, uint32_t generation,
+                            uint8_t validSlots, bool restartRequired);
+  void setProbeBusStatus(uint8_t discovered, uint8_t mappedValid);
+  void setCommissioningMode(bool enabled);
   bool filesystemReady() const { return filesystemReady_; }
   bool active() const { return active_; }
 
@@ -100,9 +108,19 @@ class SessionLogger {
   uint32_t retentionHighestSessionId_ = 0;
   uint32_t retentionPendingRun_ = 0;
   uint32_t retentionPendingSegment_ = 0;
+  ProbeMapping probeMapping_{};
+  ProbeConfigState probeConfigState_ = ProbeConfigState::Unconfigured;
+  uint32_t storedProbeConfigGeneration_ = 0;
+  uint8_t probeConfigValidSlots_ = 0;
+  uint8_t discoveredProbes_ = 0;
+  uint8_t mappedValidProbes_ = 0;
   bool retentionCatalogOverflow_ = false;
   bool retentionCatalogInvalid_ = false;
   bool retentionAuditAvailable_ = false;
+  bool probeMappingReady_ = false;
+  bool commissioningMode_ = false;
+  bool probeConfigRestartRequired_ = false;
+  bool serialLineOverflow_ = false;
   RetentionRefusal retentionRefusal_ = RetentionRefusal::None;
   ContinuationKind continuationKind_ = ContinuationKind::None;
   SensorReading latestReading_{};
@@ -143,13 +161,15 @@ class SessionLogger {
   const char* retentionRefusalName() const;
   uint32_t highestSessionId();
   String sessionPath(uint32_t id) const;
-  void processCommand(const String& command);
   void printStatus();
   void listSessions();
   void downloadSession(uint32_t id);
   void downloadCoreDump();
   bool deleteSession(uint32_t id);
   bool sessionFinalized(File& file, FinishReason* reason = nullptr);
+  void resetIdleSamplingState();
+  bool sessionLayoutMatches(const uint8_t* headerBytes, uint16_t version) const;
+  bool processCommand(const String& command);
 };
 
 uint32_t crc32(const uint8_t* data, size_t length, uint32_t initial = 0);

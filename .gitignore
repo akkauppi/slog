@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 /package-lock.json
 *.slog
+*.pending.json
 crash*.bin
 /data/
 /reports/
