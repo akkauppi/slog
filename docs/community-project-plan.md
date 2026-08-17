@@ -2,6 +2,8 @@
 
 Status: agreed direction; implementation is planned in incremental slices.
 
+Current handoff: [`community-project-status.md`](community-project-status.md).
+
 This document describes how the current single-installation sauna logger can
 become an approachable reference build and an open community dataset. It is a
 roadmap rather than a description of features that already exist. The current
