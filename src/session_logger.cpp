@@ -7,6 +7,9 @@
 #include <esp_system.h>
 #include <soc/rtc.h>
 
+#include <memory>
+#include <new>
+
 namespace sauna {
 namespace {
 constexpr char kHeaderMagic[8] = {'S', 'A', 'U', 'N', 'L', 'O', 'G', '1'};
@@ -95,11 +98,51 @@ struct __attribute__((packed)) SessionFooter {
   uint32_t footerCrc;
 };
 
+struct __attribute__((packed)) RetentionAuditV1 {
+  uint32_t magic;
+  uint32_t deletedRuns;
+  uint32_t deletedSegments;
+  uint32_t lastDeletedRun;
+  uint32_t lastDeletedSegment;
+  uint32_t highestSessionId;
+  uint32_t crc;
+};
+
+struct __attribute__((packed)) RetentionPendingV1 {
+  uint32_t magic;
+  uint32_t sessionId;
+  uint32_t rootId;
+  uint32_t crc;
+};
+
 static_assert(sizeof(SessionHeaderV1) == 130, "v1 log header layout changed");
 static_assert(sizeof(SessionHeaderV2) == 142, "v2 log header layout changed");
 static_assert(sizeof(StoredRecordV1) == 21, "v1 record layout changed");
 static_assert(sizeof(StoredRecordV2) == 25, "v2 record layout changed");
 static_assert(sizeof(SessionFooter) == 20, "log footer layout changed");
+static_assert(sizeof(RetentionAuditV1) == 28,
+              "retention audit layout changed");
+static_assert(sizeof(RetentionPendingV1) == 16,
+              "retention pending layout changed");
+
+constexpr uint32_t kRetentionAuditMagic = 0x31545541;    // AUT1
+constexpr uint32_t kRetentionPendingMagic = 0x314E4550;  // PEN1
+constexpr char kRetentionAuditKey[] = "ret_audit";
+constexpr char kRetentionPendingKey[] = "ret_pending";
+// Include the first sample at/after the cap plus one scheduler-boundary sample
+// when a late conversion is collected immediately before the next starts.
+constexpr size_t kMaximumPostTriggerRecords =
+    (12UL * 60UL * 60UL * 1000UL) / kSampleIntervalMs + 2;
+constexpr size_t kMaximumEncodedRecords =
+    kPretriggerRecords + kMaximumPostTriggerRecords;
+constexpr size_t kMaximumEncodedBlocks =
+    1 + (kMaximumPostTriggerRecords + kRecordsPerBlock - 1) /
+            kRecordsPerBlock;
+constexpr size_t kMaximumEncodedSessionBytes =
+    sizeof(SessionHeaderV2) +
+    kMaximumEncodedBlocks * sizeof(BlockHeader) +
+    kMaximumEncodedRecords * sizeof(StoredRecordV2) + sizeof(SessionFooter);
+constexpr size_t kFilesystemReserveMarginBytes = 4 * 4096;
 
 constexpr SensorDescriptor kDescriptors[kSensorCount] = {
     {{0x28, 0x25, 0xE1, 0xBD, 0, 0, 0, 0x58}, 0},
@@ -119,6 +162,28 @@ uint8_t bitCount(uint8_t value) {
     value >>= 1;
   }
   return count;
+}
+
+bool parseSessionId(const String& path, uint32_t* id) {
+  if (!id) return false;
+  const int slash = path.lastIndexOf('/');
+  const String name = path.substring(slash + 1);
+  if (!name.endsWith(".slog") || name.length() <= 5) return false;
+  const String number = name.substring(0, name.length() - 5);
+  uint32_t parsed = 0;
+  for (size_t index = 0; index < number.length(); ++index) {
+    const char character = number[index];
+    if (character < '0' || character > '9') return false;
+    const uint8_t digit = static_cast<uint8_t>(character - '0');
+    if (parsed > (UINT32_MAX - digit) / 10U) return false;
+    parsed = parsed * 10U + digit;
+  }
+  if (!parsed) return false;
+  char canonical[20];
+  snprintf(canonical, sizeof(canonical), "%08u.slog", parsed);
+  if (name != canonical) return false;
+  *id = parsed;
+  return true;
 }
 }  // namespace
 
@@ -141,6 +206,7 @@ bool SessionLogger::begin() {
     preferences.putUInt("boot_id", bootId_);
     preferences.end();
   }
+  loadRetentionState();
   return mountFilesystem();
 }
 
@@ -157,8 +223,32 @@ bool SessionLogger::mountFilesystem() {
     return false;
   }
   LittleFS.mkdir("/sessions");
+  // A non-root pending deletion normally leaves its root on disk. If the
+  // directory is empty, power disappeared after explicit LOG FORMAT erased the
+  // filesystem but before it reset the retention journal; there is no run to
+  // resume. (A pending root may legitimately be the last removed file.)
+  if (retentionPendingSegment_ &&
+      retentionPendingSegment_ != retentionPendingRun_) {
+    File directory = LittleFS.open("/sessions");
+    if (directory) {
+      File entry = directory.openNextFile();
+      const bool empty = !entry;
+      if (entry) entry.close();
+      directory.close();
+      if (empty && !resetRetentionState()) {
+        Serial.println("logger_event=retention_audit_unavailable");
+      }
+    }
+  }
   findInterruptedSession();
-  ensureReserve();
+  if (!retentionAuditAvailable_) {
+    Serial.println("logger_event=retention_audit_unavailable");
+  } else if (!reconcilePendingRetention()) {
+    Serial.println("logger_event=retention_audit_pending");
+  } else if (retentionPendingSegment_) {
+    Serial.printf("logger_event=retention_resume_pending root=%u segment=%u\n",
+                  retentionPendingRun_, retentionPendingSegment_);
+  }
   Serial.printf("logger_fs=ready total=%u used=%u\n", LittleFS.totalBytes(),
                 LittleFS.usedBytes());
   return true;
@@ -231,13 +321,34 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
 }
 
 bool SessionLogger::startSession(const SensorReading& trigger) {
-  if (!ensureReserve()) {
+  const uint32_t previousHighestId = highestSessionId();
+  if (previousHighestId == UINT32_MAX) {
+    Serial.println("logger_event=start_failed reason=session_id_exhausted");
+    return false;
+  }
+  if (retentionAuditAvailable_ &&
+      !recordHighestSessionId(previousHighestId)) {
+    retentionAuditAvailable_ = false;
+    Serial.println("logger_event=retention_audit_unavailable");
+  }
+  // Synchronize the existing high-water mark before retention can remove the
+  // only on-disk file that carries it. Do not consume a new ID until the
+  // reserve succeeds; a full device may retry a hot start many times.
+  const uint32_t nextId = previousHighestId + 1;
+  if (!reserveForNewSession()) {
     Serial.println("logger_event=logging_blocked reason=insufficient_space");
     return false;
   }
-  currentSessionId_ = nextSessionId();
+  if (LittleFS.exists(sessionPath(nextId))) {
+    Serial.println("logger_event=start_failed reason=session_id_collision");
+    return false;
+  }
+  currentSessionId_ = nextId;
   File file = LittleFS.open(sessionPath(currentSessionId_), FILE_WRITE);
-  if (!file) return false;
+  if (!file) {
+    currentSessionId_ = 0;
+    return false;
+  }
 
   SessionHeaderV2 header{};
   memcpy(header.magic, kHeaderMagic, sizeof(kHeaderMagic));
@@ -266,10 +377,18 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
       sizeof(header)) {
     file.close();
     LittleFS.remove(sessionPath(currentSessionId_));
+    currentSessionId_ = 0;
     return false;
   }
   file.flush();
   file.close();
+
+  if (retentionAuditAvailable_ && !recordHighestSessionId(currentSessionId_)) {
+    // The new header now preserves this ID on disk. Keep recording, but disable
+    // automatic retention until its persistent audit can be trusted again.
+    retentionAuditAvailable_ = false;
+    Serial.println("logger_event=retention_audit_unavailable");
+  }
 
   active_ = true;
   triggerAtMs_ = trigger.capturedAtMs;
@@ -286,7 +405,7 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
     ordered[index] = ring_[(oldest + index) % kPretriggerRecords];
   }
   if (!appendBlock(ordered, ringCount_)) {
-    active_ = false;
+    interruptActiveSession("pretrigger_write_failed");
     return false;
   }
   Serial.printf("logger_event=session_started id=%u pretrigger_records=%u\n",
@@ -308,9 +427,9 @@ void SessionLogger::evaluateActive(const SensorReading& reading) {
   if (hottest > sessionPeakCentiC_) sessionPeakCentiC_ = hottest;
 
   if (pendingCount_ == kRecordsPerBlock && !commitPending()) {
-    finishSession(FinishReason::StorageFull,
-                  static_cast<int32_t>(reading.capturedAtMs - triggerAtMs_) /
-                      1000);
+    // A failed append may have left a torn tail. Do not retry the same block or
+    // append a footer after it; earlier CRC-complete blocks remain recoverable.
+    interruptActiveSession("block_write_failed");
     return;
   }
 
@@ -353,7 +472,7 @@ bool SessionLogger::appendBlock(const SensorReading* readings, uint16_t count) {
   }
   BlockHeader block{};
   block.magic = kBlockMagic;
-  block.sequence = blockSequence_++;
+  block.sequence = blockSequence_;
   block.recordCount = count;
   block.payloadBytes = count * sizeof(StoredRecordV2);
   block.payloadCrc = crc32(reinterpret_cast<const uint8_t*>(records),
@@ -370,14 +489,14 @@ bool SessionLogger::appendBlock(const SensorReading* readings, uint16_t count) {
   if (!written) {
     return false;
   }
+  ++blockSequence_;
   totalRecords_ += count;
   return true;
 }
 
 bool SessionLogger::commitPending() {
   if (!pendingCount_) return true;
-  if (LittleFS.totalBytes() - LittleFS.usedBytes() < 8192 &&
-      !deleteOldest(currentSessionId_)) {
+  if (freeBytes() < kBlockWriteReserveBytes) {
     return false;
   }
   if (!appendBlock(pending_, pendingCount_)) return false;
@@ -400,12 +519,7 @@ bool SessionLogger::appendFooter(const void* footer, size_t size) {
 void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds) {
   if (!active_) return;
   if (!commitPending()) {
-    Serial.printf("logger_event=session_interrupted id=%u reason=write_failed\n",
-                  currentSessionId_);
-    active_ = false;
-    interruptedSessionId_ = currentSessionId_;
-    interruptedSessionWasHot_ = true;
-    currentSessionId_ = 0;
+    interruptActiveSession("final_block_write_failed");
     return;
   }
   SessionFooter footer{};
@@ -416,12 +530,7 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds) {
   footer.footerCrc = crc32(reinterpret_cast<const uint8_t*>(&footer),
                            sizeof(footer) - sizeof(footer.footerCrc));
   if (!appendFooter(&footer, sizeof(footer))) {
-    Serial.printf("logger_event=session_interrupted id=%u reason=footer_failed\n",
-                  currentSessionId_);
-    active_ = false;
-    interruptedSessionId_ = currentSessionId_;
-    interruptedSessionWasHot_ = true;
-    currentSessionId_ = 0;
+    interruptActiveSession("footer_write_failed");
     return;
   }
   const uint32_t finishedId = currentSessionId_;
@@ -435,7 +544,21 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds) {
     startCandidate_ = true;
     aboveStartSinceMs_ = millis();
   }
-  ensureReserve();
+}
+
+void SessionLogger::interruptActiveSession(const char* reason) {
+  if (!active_) return;
+  const uint32_t interruptedId = currentSessionId_;
+  Serial.printf("logger_event=session_interrupted id=%u reason=%s\n",
+                interruptedId, reason ? reason : "unknown");
+  active_ = false;
+  pendingCount_ = 0;
+  currentSessionId_ = 0;
+  interruptedSessionId_ = interruptedId;
+  interruptedSessionWasHot_ = true;
+  hotContinuationEligible_ = true;
+  continuationOf_ = interruptedId;
+  continuationKind_ = ContinuationKind::ProbablePowerRestore;
 }
 
 String SessionLogger::sessionPath(uint32_t id) const {
@@ -444,42 +567,496 @@ String SessionLogger::sessionPath(uint32_t id) const {
   return String(path);
 }
 
-uint32_t SessionLogger::nextSessionId() {
-  uint32_t highest = 0;
+uint32_t SessionLogger::highestSessionId() {
+  uint32_t highest = retentionHighestSessionId_;
   File directory = LittleFS.open("/sessions");
   File entry;
   while ((entry = directory.openNextFile())) {
-    String name = entry.name();
-    const int slash = name.lastIndexOf('/');
-    const uint32_t id = strtoul(name.substring(slash + 1).c_str(), nullptr, 10);
-    highest = max(highest, id);
+    uint32_t id = 0;
+    if (parseSessionId(String(entry.name()), &id)) highest = max(highest, id);
     entry.close();
   }
-  return highest + 1;
+  return highest;
 }
 
-bool SessionLogger::deleteOldest(uint32_t excludeId) {
-  uint32_t oldest = UINT32_MAX;
-  File directory = LittleFS.open("/sessions");
-  File entry;
-  while ((entry = directory.openNextFile())) {
-    String name = entry.name();
-    const int slash = name.lastIndexOf('/');
-    const uint32_t id = strtoul(name.substring(slash + 1).c_str(), nullptr, 10);
-    if (id && id != excludeId && id < oldest) oldest = id;
-    entry.close();
+size_t SessionLogger::freeBytes() const {
+  if (!filesystemReady_) return 0;
+  const size_t total = LittleFS.totalBytes();
+  const size_t used = LittleFS.usedBytes();
+  return used <= total ? total - used : 0;
+}
+
+bool SessionLogger::reserveForNewSession() {
+  static_assert(
+      kSessionReserveBytes >=
+          kMaximumEncodedSessionBytes + kFilesystemReserveMarginBytes,
+      "session reserve cannot hold a maximum run plus filesystem margin");
+  retentionCatalogOverflow_ = false;
+  retentionCatalogInvalid_ = false;
+  retentionRefusal_ = RetentionRefusal::None;
+  if (!filesystemReady_ || active_) {
+    retentionRefusal_ = RetentionRefusal::DeleteFailed;
+    return false;
   }
-  if (oldest == UINT32_MAX) return false;
-  Serial.printf("logger_event=retention_delete id=%u\n", oldest);
-  return LittleFS.remove(sessionPath(oldest));
-}
-
-bool SessionLogger::ensureReserve() {
-  if (!filesystemReady_) return false;
-  while (LittleFS.totalBytes() - LittleFS.usedBytes() < kMinFreeBytes) {
-    if (!deleteOldest(active_ ? currentSessionId_ : 0)) return false;
+  // A power cut may have interrupted deletion of a linked run. Complete that
+  // run before considering the raw free-space count so retention stays
+  // run-granular across reboots.
+  if (retentionPendingSegment_) {
+    if (!retentionAuditAvailable_) {
+      retentionRefusal_ = RetentionRefusal::AuditUnavailable;
+      Serial.printf("logger_event=retention_blocked reason=%s\n",
+                    retentionRefusalName());
+      return false;
+    }
+    if (!resumePendingRetentionRun()) {
+      Serial.printf("logger_event=retention_blocked reason=%s\n",
+                    retentionRefusalName());
+      return false;
+    }
+  }
+  if (freeBytes() >= kSessionReserveBytes) return true;
+  if (!retentionAuditAvailable_ || !reconcilePendingRetention()) {
+    retentionRefusal_ = RetentionRefusal::AuditUnavailable;
+    Serial.printf("logger_event=retention_blocked reason=%s\n",
+                  retentionRefusalName());
+    return false;
+  }
+  while (freeBytes() < kSessionReserveBytes) {
+    if (!retireOldestCompleteRun()) {
+      Serial.printf("logger_event=retention_blocked reason=%s\n",
+                    retentionRefusalName());
+      return false;
+    }
   }
   return true;
+}
+
+bool SessionLogger::resumePendingRetentionRun() {
+  if (!retentionPendingSegment_) return true;
+  if (!reconcilePendingRetention()) return false;
+  if (!retentionPendingSegment_) return true;
+  return retireOldestCompleteRun(retentionPendingRun_);
+}
+
+bool SessionLogger::readSessionLink(File& file, uint32_t filenameId,
+                                    uint16_t* version,
+                                    uint32_t* continuationOf) {
+  if (!version || !continuationOf) return false;
+  struct __attribute__((packed)) HeaderPrefix {
+    char magic[8];
+    uint16_t version;
+    uint16_t headerSize;
+  } prefix{};
+  file.seek(0);
+  if (file.read(reinterpret_cast<uint8_t*>(&prefix), sizeof(prefix)) !=
+          sizeof(prefix) ||
+      memcmp(prefix.magic, kHeaderMagic, sizeof(kHeaderMagic)) != 0) {
+    return false;
+  }
+
+  uint32_t sessionId = 0;
+  uint32_t linkedId = 0;
+  uint8_t headerBytes[sizeof(SessionHeaderV2)]{};
+  const size_t expectedSize =
+      prefix.version == 1 ? sizeof(SessionHeaderV1)
+                          : prefix.version == 2 ? sizeof(SessionHeaderV2) : 0;
+  if (!expectedSize || prefix.headerSize != expectedSize) return false;
+  file.seek(0);
+  if (file.read(headerBytes, expectedSize) != expectedSize) return false;
+  uint32_t storedCrc = 0;
+  memcpy(&storedCrc, headerBytes + expectedSize - sizeof(storedCrc),
+         sizeof(storedCrc));
+  if (storedCrc != crc32(headerBytes, expectedSize - sizeof(storedCrc)))
+    return false;
+
+  if (prefix.version == 1) {
+    SessionHeaderV1 header{};
+    memcpy(&header, headerBytes, sizeof(header));
+    sessionId = header.sessionId;
+    linkedId = header.continuationOf;
+  } else {
+    SessionHeaderV2 header{};
+    memcpy(&header, headerBytes, sizeof(header));
+    sessionId = header.sessionId;
+    linkedId = header.continuationOf;
+  }
+  if (!sessionId || sessionId != filenameId) return false;
+  *version = prefix.version;
+  *continuationOf = linkedId;
+  return true;
+}
+
+bool SessionLogger::readRetentionSegment(File& file, uint32_t filenameId,
+                                         RetentionSegment* segment) {
+  if (!segment) return false;
+  uint16_t version = 0;
+  uint32_t continuationOf = 0;
+  if (!readSessionLink(file, filenameId, &version, &continuationOf))
+    return false;
+
+  FinishReason reason{};
+  const size_t headerSize =
+      version == 1 ? sizeof(SessionHeaderV1) : sizeof(SessionHeaderV2);
+  const size_t recordSize =
+      version == 1 ? sizeof(StoredRecordV1) : sizeof(StoredRecordV2);
+  const bool finalized = sessionFinalized(file, &reason);
+  RetentionFinishReason retentionReason = RetentionFinishReason::Interrupted;
+  if (finalized) {
+    if (!finalizedSessionContentsValid(file, headerSize, recordSize, &reason))
+      return false;
+    switch (reason) {
+      case FinishReason::NormalCooling:
+        retentionReason = RetentionFinishReason::NormalCooling;
+        break;
+      case FinishReason::MaxDuration:
+        retentionReason = RetentionFinishReason::MaxDuration;
+        break;
+      case FinishReason::StorageFull:
+        retentionReason = RetentionFinishReason::StorageFull;
+        break;
+      default:
+        return false;
+    }
+  }
+  *segment = {filenameId, continuationOf, retentionReason};
+  return true;
+}
+
+bool SessionLogger::finalizedSessionContentsValid(File& file, size_t headerSize,
+                                                   size_t recordSize,
+                                                   FinishReason* reason) {
+  if (!reason || file.size() < headerSize + sizeof(SessionFooter)) return false;
+  const size_t footerOffset = file.size() - sizeof(SessionFooter);
+  file.seek(footerOffset);
+  SessionFooter footer{};
+  if (file.read(reinterpret_cast<uint8_t*>(&footer), sizeof(footer)) !=
+          sizeof(footer) ||
+      footer.magic != kFooterMagic ||
+      footer.footerCrc !=
+          crc32(reinterpret_cast<const uint8_t*>(&footer),
+                sizeof(footer) - sizeof(footer.footerCrc))) {
+    return false;
+  }
+
+  uint32_t expectedSequence = 0;
+  uint32_t decodedRecords = 0;
+  uint32_t decodedBlocks = 0;
+  file.seek(headerSize);
+  uint8_t buffer[96];
+  while (file.position() < footerOffset) {
+    if (file.position() + sizeof(BlockHeader) > footerOffset) return false;
+    BlockHeader block{};
+    if (file.read(reinterpret_cast<uint8_t*>(&block), sizeof(block)) !=
+            sizeof(block) ||
+        block.magic != kBlockMagic || block.sequence != expectedSequence++ ||
+        !block.recordCount || block.recordCount > kRecordsPerBlock ||
+        block.payloadBytes != block.recordCount * recordSize ||
+        file.position() + block.payloadBytes > footerOffset) {
+      return false;
+    }
+    uint32_t checksum = 0;
+    size_t remaining = block.payloadBytes;
+    while (remaining) {
+      const size_t count = min(sizeof(buffer), remaining);
+      if (file.read(buffer, count) != count) return false;
+      checksum = crc32(buffer, count, checksum);
+      remaining -= count;
+    }
+    if (checksum != block.payloadCrc) return false;
+    ++decodedBlocks;
+    decodedRecords += block.recordCount;
+  }
+  if (!decodedBlocks || !decodedRecords ||
+      decodedRecords != footer.totalRecords)
+    return false;
+  *reason = static_cast<FinishReason>(footer.reason);
+  return true;
+}
+
+bool SessionLogger::retireOldestCompleteRun(uint32_t requiredRootId) {
+  retentionCatalogOverflow_ = false;
+  retentionCatalogInvalid_ = false;
+  std::unique_ptr<RetentionSegment[]> segments(
+      new (std::nothrow) RetentionSegment[kMaxRetentionSegments]);
+  std::unique_ptr<RetentionPlan> plan(new (std::nothrow) RetentionPlan{});
+  if (!segments || !plan) {
+    retentionRefusal_ = RetentionRefusal::AllocationFailed;
+    return false;
+  }
+
+  size_t count = 0;
+  File directory = LittleFS.open("/sessions");
+  File entry;
+  while ((entry = directory.openNextFile())) {
+    uint32_t id = 0;
+    const bool validName = parseSessionId(String(entry.name()), &id);
+    if (!validName || count == kMaxRetentionSegments) {
+      retentionCatalogOverflow_ = count == kMaxRetentionSegments;
+      retentionCatalogInvalid_ = !retentionCatalogOverflow_;
+      retentionRefusal_ = retentionCatalogOverflow_
+                              ? RetentionRefusal::CatalogOverflow
+                              : RetentionRefusal::CatalogInvalid;
+      entry.close();
+      directory.close();
+      return false;
+    }
+    if (!readRetentionSegment(entry, id, &segments[count])) {
+      retentionCatalogInvalid_ = true;
+      retentionRefusal_ = RetentionRefusal::CatalogInvalid;
+      entry.close();
+      directory.close();
+      return false;
+    }
+    ++count;
+    entry.close();
+  }
+  directory.close();
+
+  if (!retentionCatalogIsValid(segments.get(), count)) {
+    retentionCatalogInvalid_ = true;
+    retentionRefusal_ = RetentionRefusal::CatalogInvalid;
+    return false;
+  }
+
+  uint32_t protectedIds[2]{};
+  size_t protectedCount = 0;
+  if (interruptedSessionId_)
+    protectedIds[protectedCount++] = interruptedSessionId_;
+  if (continuationOf_ && continuationOf_ != interruptedSessionId_)
+    protectedIds[protectedCount++] = continuationOf_;
+  if (!planOldestCompleteRun(segments.get(), count, protectedIds,
+                             protectedCount, plan.get())) {
+    retentionRefusal_ = RetentionRefusal::NoEligibleRun;
+    return false;
+  }
+  if (requiredRootId && plan->rootId != requiredRootId) {
+    retentionRefusal_ = RetentionRefusal::PendingRunMismatch;
+    return false;
+  }
+
+  for (size_t index = 0; index < plan->count; ++index) {
+    const uint32_t id = plan->sessionIds[index];
+    if (!beginRetentionDeletion(id, plan->rootId)) {
+      retentionRefusal_ = RetentionRefusal::AuditUnavailable;
+      return false;
+    }
+    if (!LittleFS.remove(sessionPath(id))) {
+      retentionRefusal_ = RetentionRefusal::DeleteFailed;
+      return false;
+    }
+    if (!finishRetentionDeletion(id, plan->rootId)) {
+      retentionRefusal_ = RetentionRefusal::AuditUnavailable;
+      return false;
+    }
+    Serial.printf("logger_event=retention_delete id=%u root=%u segments=%u "
+                  "runs=%u\n",
+                  id, plan->rootId, retentionDeletedSegments_,
+                  retentionDeletedRuns_);
+  }
+  if (!clearRetentionPending()) {
+    retentionRefusal_ = RetentionRefusal::AuditUnavailable;
+    return false;
+  }
+  return plan->count > 0;
+}
+
+void SessionLogger::loadRetentionState() {
+  retentionDeletedRuns_ = 0;
+  retentionDeletedSegments_ = 0;
+  retentionLastDeletedRun_ = 0;
+  retentionLastDeletedSegment_ = 0;
+  retentionPendingRun_ = 0;
+  retentionPendingSegment_ = 0;
+  retentionHighestSessionId_ = 0;
+  retentionAuditAvailable_ = false;
+
+  Preferences preferences;
+  if (!preferences.begin("sauna", true)) return;
+  RetentionAuditV1 audit{};
+  const size_t auditLength = preferences.getBytesLength(kRetentionAuditKey);
+  const bool auditValid =
+      auditLength == sizeof(audit) &&
+      preferences.getBytes(kRetentionAuditKey, &audit, sizeof(audit)) ==
+          sizeof(audit) &&
+      audit.magic == kRetentionAuditMagic &&
+      audit.crc == crc32(reinterpret_cast<const uint8_t*>(&audit),
+                         sizeof(audit) - sizeof(audit.crc));
+  if (auditValid) {
+    retentionDeletedRuns_ = audit.deletedRuns;
+    retentionDeletedSegments_ = audit.deletedSegments;
+    retentionLastDeletedRun_ = audit.lastDeletedRun;
+    retentionLastDeletedSegment_ = audit.lastDeletedSegment;
+    retentionHighestSessionId_ = audit.highestSessionId;
+  }
+  RetentionPendingV1 pending{};
+  const size_t pendingLength = preferences.getBytesLength(kRetentionPendingKey);
+  const bool pendingValid =
+      !pendingLength ||
+      (pendingLength == sizeof(pending) &&
+       preferences.getBytes(kRetentionPendingKey, &pending, sizeof(pending)) ==
+           sizeof(pending) &&
+       pending.magic == kRetentionPendingMagic &&
+       pending.sessionId && pending.rootId &&
+       pending.rootId <= pending.sessionId &&
+       pending.crc == crc32(reinterpret_cast<const uint8_t*>(&pending),
+                            sizeof(pending) - sizeof(pending.crc)));
+  if (pendingLength && pendingValid) {
+    retentionPendingRun_ = pending.rootId;
+    retentionPendingSegment_ = pending.sessionId;
+  }
+  preferences.end();
+
+  if (auditLength == 0 && pendingLength == 0) {
+    retentionAuditAvailable_ = saveRetentionAudit();
+  } else {
+    retentionAuditAvailable_ = auditValid && pendingValid;
+  }
+}
+
+bool SessionLogger::saveRetentionAudit() {
+  RetentionAuditV1 audit{kRetentionAuditMagic,
+                         retentionDeletedRuns_,
+                         retentionDeletedSegments_,
+                         retentionLastDeletedRun_,
+                         retentionLastDeletedSegment_,
+                         retentionHighestSessionId_,
+                         0};
+  audit.crc = crc32(reinterpret_cast<const uint8_t*>(&audit),
+                    sizeof(audit) - sizeof(audit.crc));
+  Preferences preferences;
+  if (!preferences.begin("sauna", false)) return false;
+  const bool saved =
+      preferences.putBytes(kRetentionAuditKey, &audit, sizeof(audit)) ==
+      sizeof(audit);
+  preferences.end();
+  return saved;
+}
+
+bool SessionLogger::recordHighestSessionId(uint32_t sessionId) {
+  if (sessionId <= retentionHighestSessionId_) return true;
+  const uint32_t previous = retentionHighestSessionId_;
+  retentionHighestSessionId_ = sessionId;
+  if (saveRetentionAudit()) return true;
+  retentionHighestSessionId_ = previous;
+  return false;
+}
+
+bool SessionLogger::beginRetentionDeletion(uint32_t sessionId,
+                                           uint32_t rootId) {
+  RetentionPendingV1 pending{kRetentionPendingMagic, sessionId, rootId, 0};
+  pending.crc = crc32(reinterpret_cast<const uint8_t*>(&pending),
+                      sizeof(pending) - sizeof(pending.crc));
+  Preferences preferences;
+  if (!preferences.begin("sauna", false)) {
+    retentionAuditAvailable_ = false;
+    return false;
+  }
+  const bool saved =
+      preferences.putBytes(kRetentionPendingKey, &pending, sizeof(pending)) ==
+      sizeof(pending);
+  preferences.end();
+  if (saved) {
+    retentionPendingRun_ = rootId;
+    retentionPendingSegment_ = sessionId;
+  } else {
+    retentionAuditAvailable_ = false;
+  }
+  return saved;
+}
+
+bool SessionLogger::clearRetentionPending() {
+  Preferences preferences;
+  if (!preferences.begin("sauna", false)) {
+    retentionAuditAvailable_ = false;
+    return false;
+  }
+  const bool cleared = preferences.remove(kRetentionPendingKey) ||
+                       !preferences.isKey(kRetentionPendingKey);
+  preferences.end();
+  if (cleared) {
+    retentionPendingRun_ = 0;
+    retentionPendingSegment_ = 0;
+  } else {
+    retentionAuditAvailable_ = false;
+  }
+  return cleared;
+}
+
+bool SessionLogger::finishRetentionDeletion(uint32_t sessionId,
+                                            uint32_t rootId) {
+  if (retentionLastDeletedSegment_ != sessionId) {
+    ++retentionDeletedSegments_;
+    retentionLastDeletedSegment_ = sessionId;
+    if (sessionId == rootId) {
+      ++retentionDeletedRuns_;
+      retentionLastDeletedRun_ = rootId;
+    }
+  }
+
+  const bool saved = saveRetentionAudit();
+  if (!saved) {
+    retentionAuditAvailable_ = false;
+    return false;
+  }
+  return true;
+}
+
+bool SessionLogger::reconcilePendingRetention() {
+  if (!retentionPendingSegment_) return true;
+  if (LittleFS.exists(sessionPath(retentionPendingSegment_))) return true;
+  const bool completedRoot = retentionPendingSegment_ == retentionPendingRun_;
+  if (!finishRetentionDeletion(retentionPendingSegment_,
+                               retentionPendingRun_)) {
+    return false;
+  }
+  return !completedRoot || clearRetentionPending();
+}
+
+bool SessionLogger::resetRetentionState() {
+  Preferences preferences;
+  if (!preferences.begin("sauna", false)) {
+    retentionAuditAvailable_ = false;
+    return false;
+  }
+  const bool pendingCleared = preferences.remove(kRetentionPendingKey) ||
+                              !preferences.isKey(kRetentionPendingKey);
+  preferences.end();
+  if (!pendingCleared) return false;
+
+  retentionDeletedRuns_ = 0;
+  retentionDeletedSegments_ = 0;
+  retentionLastDeletedRun_ = 0;
+  retentionLastDeletedSegment_ = 0;
+  retentionHighestSessionId_ = 0;
+  retentionPendingRun_ = 0;
+  retentionPendingSegment_ = 0;
+  retentionCatalogOverflow_ = false;
+  retentionCatalogInvalid_ = false;
+  retentionRefusal_ = RetentionRefusal::None;
+  retentionAuditAvailable_ = saveRetentionAudit();
+  return retentionAuditAvailable_;
+}
+
+const char* SessionLogger::retentionRefusalName() const {
+  switch (retentionRefusal_) {
+    case RetentionRefusal::None:
+      return "none";
+    case RetentionRefusal::CatalogOverflow:
+      return "catalog_overflow";
+    case RetentionRefusal::CatalogInvalid:
+      return "catalog_invalid";
+    case RetentionRefusal::NoEligibleRun:
+      return "no_eligible_run";
+    case RetentionRefusal::AuditUnavailable:
+      return "audit_unavailable";
+    case RetentionRefusal::AllocationFailed:
+      return "allocation_failed";
+    case RetentionRefusal::DeleteFailed:
+      return "delete_failed";
+    case RetentionRefusal::PendingRunMismatch:
+      return "pending_run_mismatch";
+  }
+  return "unknown";
 }
 
 void SessionLogger::findInterruptedSession() {
@@ -621,11 +1198,22 @@ void SessionLogger::processCommand(const String& command) {
       LittleFS.end();
       const bool formatted = LittleFS.format();
       filesystemReady_ = formatted && LittleFS.begin(false);
+      bool retentionReset = false;
       if (filesystemReady_) {
         LittleFS.mkdir("/sessions");
+        retentionReset = resetRetentionState();
+        ringHead_ = 0;
+        ringCount_ = 0;
+        pendingCount_ = 0;
+        startCandidate_ = false;
+        coolingCandidate_ = false;
+        continuationOf_ = 0;
+        continuationKind_ = ContinuationKind::None;
+        hotContinuationEligible_ = false;
         findInterruptedSession();
       }
-      Serial.printf("LOG_FORMAT ok=%u\n", filesystemReady_);
+      Serial.printf("LOG_FORMAT ok=%u retention_reset=%u\n", filesystemReady_,
+                    retentionReset);
     }
   } else {
     Serial.println("LOG_ERROR unknown_command");
@@ -645,18 +1233,33 @@ void SessionLogger::printStatus() {
               (latestReading_.statusFlags & ChipTemperatureValid)
           ? latestReading_.chipCentiC
           : INT16_MIN;
+  const size_t available = freeBytes();
   Serial.printf("LOG_STATUS fs=%u active=%u id=%u total=%u used=%u free=%u "
                 "boot=%u reset=%u sensors=%u chip_centi_c=%d rtc_source=%u "
-                "rtc_hz=%u interrupted=%u coredump=%u coredump_bytes=%u\n",
+                "rtc_hz=%u interrupted=%u coredump=%u coredump_bytes=%u "
+                "retention=rolling reserve_ok=%u reserve_required=%u "
+                "retention_deleted_runs=%u retention_deleted_segments=%u "
+                "retention_last_run=%u retention_last_segment=%u "
+                "retention_pending=%u retention_pending_root=%u "
+                "retention_highest_session=%u retention_catalog_overflow=%u "
+                "retention_catalog_invalid=%u retention_audit_ok=%u "
+                "retention_last_refusal=%s\n",
                 filesystemReady_, active_, currentSessionId_,
                 filesystemReady_ ? LittleFS.totalBytes() : 0,
                 filesystemReady_ ? LittleFS.usedBytes() : 0,
-                filesystemReady_ ? LittleFS.totalBytes() - LittleFS.usedBytes()
-                                 : 0,
+                static_cast<unsigned>(available),
                 bootId_, resetReason_, validSensors, chipCentiC,
                 static_cast<unsigned>(rtc_clk_slow_freq_get()),
                 rtc_clk_slow_freq_get_hz(), interruptedSessionId_, coreDumpValid,
-                coreDumpValid ? static_cast<unsigned>(coreDumpSize) : 0);
+                coreDumpValid ? static_cast<unsigned>(coreDumpSize) : 0,
+                filesystemReady_ && available >= kSessionReserveBytes,
+                static_cast<unsigned>(kSessionReserveBytes),
+                retentionDeletedRuns_, retentionDeletedSegments_,
+                retentionLastDeletedRun_, retentionLastDeletedSegment_,
+                retentionPendingSegment_, retentionPendingRun_,
+                retentionHighestSessionId_, retentionCatalogOverflow_,
+                retentionCatalogInvalid_, retentionAuditAvailable_,
+                retentionRefusalName());
 }
 
 void SessionLogger::listSessions() {
@@ -783,7 +1386,47 @@ void SessionLogger::downloadCoreDump() {
 
 bool SessionLogger::deleteSession(uint32_t id) {
   if (!filesystemReady_ || (active_ && id == currentSessionId_)) return false;
-  return LittleFS.remove(sessionPath(id));
+  if (retentionPendingSegment_) return false;
+  if (!id || !LittleFS.exists(sessionPath(id))) return false;
+
+  // Refuse to orphan a continuation. Linked runs can still be removed
+  // explicitly, but only from newest segment toward the root.
+  File directory = LittleFS.open("/sessions");
+  if (!directory) return false;
+  File entry;
+  while ((entry = directory.openNextFile())) {
+    uint32_t filenameId = 0;
+    uint16_t version = 0;
+    uint32_t continuationOf = 0;
+    if (!parseSessionId(String(entry.name()), &filenameId)) {
+      entry.close();
+      directory.close();
+      return false;
+    }
+    if (filenameId == id) {
+      entry.close();
+      continue;
+    }
+    const bool valid =
+        readSessionLink(entry, filenameId, &version, &continuationOf);
+    entry.close();
+    if (!valid || continuationOf == id) {
+      directory.close();
+      return false;
+    }
+  }
+  directory.close();
+  const bool removed = LittleFS.remove(sessionPath(id));
+  if (removed && interruptedSessionId_ == id) {
+    interruptedSessionId_ = 0;
+    interruptedSessionWasHot_ = false;
+  }
+  if (removed && continuationOf_ == id) {
+    continuationOf_ = 0;
+    continuationKind_ = ContinuationKind::None;
+    hotContinuationEligible_ = false;
+  }
+  return removed;
 }
 
 }  // namespace sauna

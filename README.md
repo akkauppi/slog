@@ -65,6 +65,18 @@ Install the optional offline-analysis dependency once:
 - If power returns while the sauna is still hot, the new session records the
   interrupted session ID as a probable continuation. A cold reading from at
   least six probes cancels that link.
+- Device flash is a bounded rolling store, not the permanent archive. Immediately
+  before opening a new session, the logger requires enough free space for a full
+  12-hour recording. If necessary, it may retire the oldest eligible completed
+  logical run to make that reserve. Segments linked by continuation metadata are
+  treated as one run, and an interrupted session that may be continued is
+  protected.
+- Linked segments are retired newest first. If power fails between removals,
+  the remaining files are still a valid prefix and the same run is completed
+  immediately before the next session starts.
+- Retention never runs during an active session. If the full-session reserve
+  cannot be made from eligible completed runs, the new session is refused and
+  every existing raw log is left in place.
 - The firmware records boot/reset metadata, RTC source and fallback state,
   sensor-health flags, and the ESP32-C3's internal temperature alongside probe
   readings. Wi-Fi remains disabled.
@@ -106,10 +118,15 @@ Comparison reports provide a selector for all eight probe heights, shared-scale
 thermal maps, and a compact outcome table. Every report embeds its plotting
 code and can be archived alongside the original logs.
 
-`status` reports filesystem health, the latest sensor and internal-chip
+`status` reports filesystem health, whether the full reserve is currently free,
+retention counts and any pending retirement, the latest sensor and internal-chip
 temperature, RTC source, reset cause, interrupted-session state, and whether a
-crash dump is present. If a watchdog crash occurred, preserve the raw dump
-before erasing it:
+crash dump is present. Retention and a low-space start refusal are also reported
+over USB. There is currently no standalone LED warning, so an unattended refusal
+is only visible after USB is reconnected; run `status` before any measurement
+that must not be missed.
+
+If a watchdog crash occurred, preserve the raw dump before erasing it:
 
 ```sh
 .venv/bin/python tools/logs.py crash-download crash.bin
@@ -122,8 +139,13 @@ enabled in the build. ESP-IDF falls back if XTAL32K cannot start; ESP32-C3 does
 not provide ESP-IDF's separate crystal-failure watchdog, so the logger samples
 the active RTC source continuously and records any fallback for later review.
 
-Downloading never removes the device copy. Delete a session only after its raw
-file has been validated and preserved:
+Downloading neither removes the device copy nor marks it as archived. Because
+the logger cannot know whether a completed run has been copied elsewhere,
+download and CRC-validate raw `.slog` files regularly, ideally after every
+measurement. Automatic retention may eventually retire an old completed run.
+Manual deletion remains available when you have already preserved every linked
+segment of that logical run. Delete a linked run newest segment first; firmware
+refuses to delete a segment while another on-device session points to it:
 
 ```sh
 .venv/bin/python tools/logs.py delete 1
@@ -166,7 +188,8 @@ probe by at least 1 C. Partial progress is saved after every identification in
 ## Unattended sauna test checklist
 
 1. Build and upload the firmware, then run `status` and confirm all eight probes,
-   `RTC source: external crystal`, and adequate filesystem free space.
+   `RTC source: external crystal`, and that the full-session storage reserve is
+   ready.
 2. Download any sessions not already backed up. Keep the XIAO and wiring in the
    coolest practical location; keep the USB power bank outside the sauna.
 3. Disconnect serial, power from the power bank, and let the firmware start the

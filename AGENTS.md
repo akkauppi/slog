@@ -42,6 +42,12 @@ Hardware upload and serial commands require explicit user intent and access to
 `/dev/ttyACM0`. A healthy pre-test `status` has `fs=1`, eight sensors,
 `rtc_source=1`, `rtc_hz=32768`, and nonzero free bytes.
 
-Raw `.slog` files are the source of truth. Do not delete device logs until the
-download CRC validates and the local raw file is preserved. Power-linked
-segments have an unknown-duration gap; analysis must never invent that time.
+Raw `.slog` files are the source of truth, but the device is a bounded rolling
+store rather than the permanent archive. When space is needed for a new run,
+firmware may retire the oldest eligible logical run before that new run starts.
+It must reserve enough space for the full 12-hour session, delete linked
+segments as one run, protect any interrupted session selected as a probable
+continuation, never reclaim space during an active session, and expose
+retention activity in status output. Download and CRC-validate raw logs
+regularly. Power-linked segments have an unknown-duration gap; analysis must
+never invent that time.
