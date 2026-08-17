@@ -29,6 +29,12 @@ report without editing source code. It also lets them publish a privacy-reviewed
 run that another person can reproduce from the original `.slog` data and its
 versioned metadata.
 
+The project will do one thing well before adding extensions: capture, preserve,
+analyze, and compare trustworthy temperature measurements. Each delivery slice
+and pull request has one primary outcome. Supporting work belongs in that slice
+only when it is necessary to deliver or verify that outcome; useful ideas that
+do not meet that test are deferred.
+
 ## Invariants
 
 The redesign must preserve the logger's existing safety and data-integrity
@@ -90,6 +96,9 @@ coherent delivery slice. Do not accumulate the redesign on a long-lived
   automated checks pass and any required hardware verification is recorded.
 - Keep commits intentional and PRs small enough to review and revert as one
   behavior change. Avoid mixing unrelated cleanup into a slice.
+- State the single primary outcome in each PR description. If an extension can
+  be reviewed, tested, and shipped independently, move it to a later slice even
+  when it appears closely related.
 - Merge a completed slice before starting its dependent successor, then branch
   again from the updated `main`. Use an issue or milestone—not a shared feature
   branch—to track the overall community-project roadmap.
@@ -106,11 +115,19 @@ coherent delivery slice. Do not accumulate the redesign on a long-lived
 - Link it from the main README.
 - Treat later slices as planned behavior, not existing capability.
 
-### Slice 1: preservation and generic commissioning
+### Slice 1: preserve every raw session
 
 - Remove automatic retention deletion. Keep a reserve large enough for the
   maximum 12-hour session and refuse to start a new run when that reserve is
   unavailable. Manual deletion remains an explicit post-download operation.
+- Make the refusal and available storage clear in status output, and add tests
+  proving that low storage never deletes a completed session.
+
+The primary outcome of this slice is preservation under storage pressure. It
+does not change probe commissioning, the log format, or the browser workflow.
+
+### Slice 2: generic probe commissioning
+
 - Replace compile-time probe arrays with one runtime configuration used by both
   acquisition and log descriptors.
 - Store configuration in two versioned NVS slots. Each record contains a
@@ -133,7 +150,7 @@ Planned configuration commands are `CFG SCAN`, `CFG BEGIN`, `CFG SET`,
 `CFG COMMIT`, `CFG ABORT`, and `CFG GET`. A separate `SYS INFO` response will
 advertise protocol and release compatibility.
 
-### Slice 2: reproducible hardware and releases
+### Slice 3: reproducible hardware and releases
 
 - Publish an exact bill of materials with tested substitutes, cost and time
   estimates, a wiring diagram, harness topology, probe labels, strain relief,
@@ -158,11 +175,15 @@ store only canonical SI values to prevent divergent copies: meters, cubic
 meters, kilograms, kilowatts, liters, and degrees Celsius. The selected display
 system is primary and the alternative is shown in parentheses.
 
-### Slice 3: browser device console
+### Slice 4: offline-first browser device console
 
-Build one static HTTPS application in this repository. The proposed stack is
-Astro and TypeScript for the site, with Preact for the interactive console.
-Dependencies and plotting assets are pinned and self-hosted. There is no
+Build one installable, offline-first static HTTPS application in this
+repository. The proposed stack is Astro and TypeScript for the site, with
+Preact for the interactive console. Dependencies and assets are pinned and
+self-hosted. After an initial load or installation, the building instructions,
+bundled firmware, commissioning, log retrieval, and later local analysis should
+remain usable without a network connection. Fetching updates, browsing the
+latest catalog, and submitting a record require a connection. There is no
 analytics or automatic upload.
 
 The console will provide:
@@ -182,8 +203,10 @@ The console will provide:
   declared byte count and transfer CRC agree. The UI never overwrites an
   existing local file and has no session-delete or core-dump-erase controls in
   its first release.
-- Local `.slog` import, charts, thermal map, comparison, CSV and report export,
-  metadata entry, and creation of a submission bundle.
+
+The primary outcome of this slice is a safe browser path from released firmware
+to a preserved local `.slog` file. Analysis and publishing remain separate
+slices even though they share the same portal shell.
 
 The planned wired update starts with
 `FW BEGIN size=<bytes> sha256=<hex>`, followed by sequence-numbered 1 KiB binary
@@ -201,7 +224,7 @@ fallback. Useful implementation references are:
 - [ESP-IDF OTA documentation](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-reference/system/ota.html)
 - [Seeed XIAO ESP32-C3 recovery procedure](https://wiki.seeedstudio.com/XIAO_ESP32C3_Getting_Started/)
 
-### Slice 4: browser analysis and metadata
+### Slice 5: browser analysis and minimum metadata
 
 - Port binary parsing and pure analysis math to a TypeScript core running in a
   Web Worker. Differential fixtures must produce the same results as the Python
@@ -219,6 +242,10 @@ fallback. Useful implementation references are:
   context lives in a versioned `submission.json` sidecar rather than risking
   the existing raw format.
 
+The browser provides local `.slog` import, charts, a thermal map, comparison,
+CSV and report export. It can prepare the minimum metadata needed to submit a
+measurement, but all analysis remains useful without publishing anything.
+
 Each submission has a global UUID, a pseudonymous installation UUID, the CC0
 license declaration, public-raw consent, and an explicit ordered list of raw
 segments. Each segment records its filename, SHA-256, device-local session ID,
@@ -226,8 +253,9 @@ and continuation relationship. Local session numbers are never treated as
 globally unique and chains are never inferred by placing files from different
 devices in one directory.
 
-Required metadata permits `unknown` where a public-sauna visitor cannot obtain
-the information:
+Initial metadata is limited to what is needed to interpret or compare the
+temperature record. It permits `unknown` where a public-sauna visitor cannot
+obtain the information:
 
 - country and optional broad region, never an exact address or coordinate;
 - sauna archetype, indoor/outdoor context, internal dimensions or volume, and
@@ -236,15 +264,28 @@ the information:
   make/model;
 - absolute probe-column height or ceiling offset and its horizontal relationship
   to the heater and benches;
-- ventilation category;
 - observation start/end conditions, approximate run date, attribution choice,
   and explicit CC0/public-raw consent.
 
-Optional context includes construction and insulation, glass area, bench
-heights, inlet/outlet locations, controller setting, outdoor temperature, wood
-loads, occupancy bands, door openings, löyly events, and calibration results.
-Events refer to a particular segment and relative second. No event can bridge
-an unknown power gap.
+The first release provides one optional free-text observation note. A
+contributor may use it to mention context such as door openings, löyly, or
+whether people were present, but none of this is required or converted into a
+structured experience score. Calibration results can remain separately labeled
+technical metadata because they affect interpretation of the temperatures.
+
+### Temperature data before experience data
+
+The reference logger will not add an occupancy switch for the first community
+release, and the submission flow will not quiz contributors about comfort,
+health effects, or subjective sauna quality. These would add hardware,
+instructions, privacy questions, and ambiguous data before their analytical
+value is established. The optional observation note is enough to preserve
+useful context while the project learns from actual temperature records.
+
+The metadata format remains versioned so structured events or an optional
+experience study can be discussed later. Such an extension should have its own
+clear question, consent model, and delivery slice rather than growing out of
+the initial temperature workflow implicitly.
 
 ### Hot-start and observation-window runs
 
@@ -280,26 +321,41 @@ Coverage is reported on separate axes: heating observed, steady state observed,
 and cooling observed. A hot-start run is not downgraded merely because it was
 not intended to capture heating or cooling.
 
-### Slice 5: curated public catalog
+### Slice 6: private intake and curated public catalog
 
-The initial catalog is generated as a static site rather than backed by a
-custom database:
+The public experience is part of the same portal, but the first release does
+not need a conventional contributor-account or CRUD application. The catalog
+is generated from reviewed records as static pages and data:
 
 1. The browser validates locally and shows exactly what will be public,
    including the stable probe identifiers contained in the raw download.
-2. It produces a ZIP with untouched `.slog` files, `submission.json`, hashes,
-   and reproducible derived CSV, preview, and `summary.json` artifacts.
-3. It opens a prefilled GitHub submission issue; the contributor attaches the
-   ZIP.
-4. CI and a curator revalidate integrity, schema, privacy, and comparability.
-5. Accepted bundles are preserved through a moderated Zenodo Community. The
-   catalog stores lightweight summaries and stable archive/DOI links.
+2. When the contributor explicitly chooses to publish, the portal sends the
+   raw `.slog` file or files and a short metadata form to a small private
+   submission inbox. No GitHub or Zenodo account is required.
+3. The service assigns a receipt ID, checks upload bounds and hashes, and keeps
+   the pending submission private. Server-side tooling independently parses
+   the raw data and never trusts browser-derived summaries.
+4. A curator manually reviews integrity, privacy, consent, metadata, and
+   comparability. Accepted records become version-controlled catalog data;
+   corrections and withdrawals are curator-assisted initially.
+5. The site generator publishes privacy-reviewed summaries, comparisons, and
+   consented raw downloads. The original upload remains immutable, while
+   metadata corrections retain revision history.
+6. Periodically, maintainers publish a curated snapshot of accepted records as
+   one versioned Zenodo dataset release. Zenodo provides durable files and a DOI
+   for the corpus; it is an archive downstream of intake, not a task imposed on
+   each contributor or a separate record for every sauna run.
 
-Catalog pages will filter and compare by sauna and heater type, volume, power
-density, construction, ventilation, broad region, observation coverage, and
-quality metadata. Comparisons expose probe geometry and never silently treat
-different absolute placements as equivalent. Ordinary pages and APIs omit
-probe ROMs even though the consented original raw download remains public.
+The inbox is deliberately narrow: authenticated curator access, bounded private
+object storage, validation, and status/receipt handling. It is not a general
+database editor. The last cached catalog may remain browsable offline, while
+new submissions and the latest community data naturally require a connection.
+
+Catalog pages will initially filter and compare by sauna and heater type,
+volume, power density, broad region, observation coverage, and quality
+metadata. Comparisons expose probe geometry and never silently treat different
+absolute placements as equivalent. Ordinary pages and APIs omit probe ROMs
+even though the consented original raw download remains public.
 
 Quality and usefulness are represented by independent badges rather than one
 ranking:
@@ -370,10 +426,13 @@ port still requires explicit user intent.
 ## Out of scope for the first community release
 
 - Wi-Fi, cloud-connected logging, or automatic device upload.
-- A custom account system, upload backend, or operational database.
+- A contributor account system, general CRUD portal, or full operational
+  database. Only the small private submission inbox and manual curation needed
+  for reviewed publication are planned.
 - Alternative probe counts, spacings, boards, or third-party CSV formats in the
   comparable reference dataset. Such experiments may be preserved separately.
 - Humidity or other new sensing hardware.
-- Exact-location maps, occupant tracking, or health claims.
+- An occupancy switch, structured occupancy tracking, or a structured
+  experience survey. Exact-location maps and health claims are also excluded.
 - Automatic deletion, automatic filesystem formatting, or unattended
   destructive recovery operations.

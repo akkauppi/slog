@@ -1,6 +1,6 @@
 # Community project status
 
-Last updated: 2026-08-17, Europe/Helsinki.
+Last updated: 2026-08-18, Europe/Helsinki.
 
 This is the rolling handoff for the community-project work. Update it when a
 session changes the active branch, pull request, completed slice, or immediate
@@ -26,9 +26,27 @@ and must not be reused for new work.
 - Added the community roadmap covering the reference build, generic probe
   commissioning, browser flashing and management, local analysis, metadata,
   public catalog, governance, licenses, and release gates.
+- Adopted a one-primary-outcome rule for each slice and pull request: ship and
+  verify the narrow outcome first, then discuss independently deliverable
+  extensions.
+- Split raw-session preservation from generic probe commissioning. Preservation
+  is now Slice 1; commissioning follows only after that focused change is
+  merged.
 - Recorded hot-start/public-sauna behavior as a first-class observation mode,
   including automatic stabilization estimation, left-censored threshold
   semantics, and separate heating/steady-state/cooling coverage.
+- Chose one offline-first portal for building instructions, released firmware,
+  commissioning, retrieval, and local analysis. Publishing is an explicit
+  online action into a small private inbox followed by manual review and a
+  generated static catalog; contributors do not file GitHub issues or create
+  Zenodo records.
+- Assigned Zenodo the narrower role of periodic, curated dataset snapshots with
+  versioned archival citations rather than one archive deposit per submitted
+  run.
+- Kept the initial data model focused on temperatures and minimum comparison
+  metadata. An occupancy switch and structured experience questions are
+  deferred; the first release allows only an optional observation note for that
+  context.
 - Recorded canonical SI storage with metric and imperial input/display.
 - Recorded the Git workflow: one short-lived branch and draft PR per coherent
   slice, with no long-lived redesign branch.
@@ -86,10 +104,14 @@ state that runtime behavior is unchanged, and list the documentation checks.
    implementation slice. Do not continue implementation on the roadmap branch.
 5. Start Slice 1 with the preservation fix: remove unverified automatic session
    deletion and make insufficient reserve block a new session without deleting
-   existing raw logs. Keep that change separate from runtime probe
-   commissioning if it grows beyond a small, reviewable PR.
+   existing raw logs. Make preservation under storage pressure the PR's only
+   primary outcome.
+6. After Slice 1 is reviewed and merged, start a new branch for Slice 2 generic
+   probe commissioning. Do not combine its NVS mapping or USB protocol work
+   with the preservation PR.
 
-The later generic-probe configuration work must continue to preserve ROM-based
+All later work—including commissioning, the offline-first portal, analysis,
+private intake, and static publication—must continue to preserve ROM-based
 identity, the fixed eight-probe geometry, power-cut safety, CRC validation,
 explicit interruption metadata, manual filesystem formatting, Wi-Fi disabled,
 RTC diagnostics, and the committed partition layout.
