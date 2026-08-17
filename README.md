@@ -8,7 +8,12 @@ The repository contains the embedded logger, USB extraction tools, CRC-safe log
 parser, and self-contained interactive analysis reports. Development invariants
 and verification commands for coding agents are summarized in `AGENTS.md`.
 
-An anonymized first full sauna run is retained as a reproducible example. See
+The agreed roadmap for turning this into a reproducible DIY build, browser
+utility, and curated community dataset is documented in
+[`docs/community-project-plan.md`](docs/community-project-plan.md).
+
+The first full sauna run is retained as a de-identified reproducible example.
+Like every raw `.slog`, it still contains stable probe ROM identifiers. See
 [`docs/runs/2026-08-16-session-1.md`](docs/runs/2026-08-16-session-1.md) for the
 observations and commands used to regenerate its CSV and interactive report.
 
