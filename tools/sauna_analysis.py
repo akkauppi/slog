@@ -64,10 +64,9 @@ def build_run(sessions: Iterable[Any]) -> Run:
             warnings.append(f"session {session.session_id}: no committed samples")
             continue
         first = session.samples[0].relative_seconds
-        interval = session.sample_interval_ms / 1000.0
-        offset = 0.0 if previous_end is None else previous_end + interval - first
+        offset = 0.0 if previous_end is None else previous_end - first
         if previous_end is not None:
-            breaks.append(previous_end + interval / 2.0)
+            breaks.append(previous_end)
         for sample in session.samples:
             points.append(Point(
                 sample.relative_seconds + offset, segment, sample.relative_seconds,

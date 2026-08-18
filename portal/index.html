@@ -6,28 +6,39 @@
     <meta name="theme-color" content="#171717">
     <meta
       name="description"
-      content="Install verified firmware and commission eight temperature probes on a sauna logger over USB."
+      content="Prepare a sauna logger, preserve its records, and analyze raw measurements locally."
     >
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self'; manifest-src 'self'"
     >
-    <title>Install &amp; set up · Sauna logger</title>
+    <title>Sauna logger · Local portal</title>
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
     <script type="module" src="./js/app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#main">Skip to setup</a>
+    <a class="skip-link" href="#main">Skip to content</a>
 
     <header class="site-header">
       <div class="site-header__inner">
-        <div class="identity" aria-label="Sauna logger install and setup utility">
+        <div class="identity" aria-label="Sauna logger local portal">
           <span class="identity__product">Sauna logger</span>
           <span class="identity__separator" aria-hidden="true">/</span>
-          <span class="identity__section">Install &amp; set up</span>
+          <span class="identity__section">Local portal</span>
         </div>
+        <nav class="view-nav" aria-label="Portal sections">
+          <button type="button" data-portal-view="prepare" aria-controls="prepare-view" aria-current="page">
+            Prepare
+          </button>
+          <button type="button" data-portal-view="records" aria-controls="records-view">
+            Records
+          </button>
+          <button type="button" data-portal-view="analyze" aria-controls="analyze-view">
+            Analyze
+          </button>
+        </nav>
         <div class="connection">
           <span
             class="connection__state"
@@ -47,9 +58,10 @@
     </header>
 
     <main id="main" class="page">
+      <div class="portal-view" id="prepare-view" data-view="prepare">
       <section class="page-intro" aria-labelledby="page-title">
         <p class="section-label">Local USB utility</p>
-        <h1 id="page-title">Prepare a sauna logger</h1>
+        <h1 id="page-title" tabindex="-1">Prepare a sauna logger</h1>
         <p>
           Install the project firmware, verify the running logger, then assign
           its eight temperature probes. The portal uses only bundled release
@@ -310,10 +322,152 @@
           </details>
         </div>
       </div>
+      </div>
+
+      <section class="portal-view data-view" id="records-view" data-view="records" aria-labelledby="records-title" hidden>
+        <div class="page-intro page-intro--compact">
+          <p class="section-label">Local USB records</p>
+          <h1 id="records-title" tabindex="-1">Stored sauna records</h1>
+          <p>
+            Inspect the bounded device store, preserve CRC-verified raw files,
+            and remove only complete logical runs that have been verified after saving.
+          </p>
+        </div>
+
+        <div class="message" id="records-message" role="status" aria-live="polite" hidden></div>
+
+        <section class="data-section" aria-labelledby="storage-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-label">Logger</p>
+              <h2 id="storage-title">Storage status</h2>
+            </div>
+            <p id="records-device-identity">Not connected</p>
+          </div>
+          <dl class="storage-summary" id="storage-summary" hidden>
+            <div><dt>Recording</dt><dd id="records-active">&mdash;</dd></div>
+            <div><dt>Storage</dt><dd id="records-storage">&mdash;</dd></div>
+            <div><dt>12-hour reserve</dt><dd id="records-reserve">&mdash;</dd></div>
+            <div><dt>Retention</dt><dd id="records-retention">&mdash;</dd></div>
+          </dl>
+          <p class="retention-note" id="records-retention-note" hidden></p>
+          <div class="actions">
+            <button class="button button--primary" id="records-connect" type="button">Choose logger</button>
+            <button class="button button--secondary" id="records-refresh" type="button" hidden>Refresh records</button>
+          </div>
+          <p class="privacy-note">
+            The running firmware identity is checked before record commands are enabled.
+            Transfers stop while a recording is active. Nothing is uploaded.
+          </p>
+        </section>
+
+        <section class="data-section" aria-labelledby="catalog-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-label">Device catalog</p>
+              <h2 id="catalog-title">Logical runs</h2>
+            </div>
+            <p id="records-count">No catalog loaded</p>
+          </div>
+          <div id="records-catalog" class="records-catalog">
+            <p class="empty-state">Connect a logger to inspect its records.</p>
+          </div>
+        </section>
+      </section>
+
+      <section class="portal-view data-view" id="analyze-view" data-view="analyze" aria-labelledby="analyze-title" hidden>
+        <div class="page-intro page-intro--compact">
+          <p class="section-label">Offline analysis</p>
+          <h1 id="analyze-title" tabindex="-1">Analyze raw sauna logs</h1>
+          <p>
+            Open one or more <code>.slog</code> files. Parsing, grouping, and charts
+            stay in this browser; unknown power-off time is never invented.
+          </p>
+        </div>
+
+        <section class="data-section file-import" aria-labelledby="open-records-title">
+          <p class="section-label">Raw source files</p>
+          <h2 id="open-records-title">Open measurements</h2>
+          <label class="file-control" for="analysis-files">
+            <span>Choose one or more .slog files</span>
+            <input id="analysis-files" type="file" accept=".slog,application/octet-stream" multiple>
+          </label>
+          <p class="privacy-note">Files are read into memory for this page only and are never uploaded.</p>
+          <div class="message" id="analysis-message" role="status" aria-live="polite" hidden></div>
+          <div id="analysis-group-issues" class="analysis-issues" hidden></div>
+        </section>
+
+        <section class="data-section analysis-output" id="analysis-output" aria-labelledby="analysis-run-title" hidden>
+          <div class="analysis-toolbar">
+            <div>
+              <p class="section-label">Selected logical run</p>
+              <h2 id="analysis-run-title">Measurement summary</h2>
+            </div>
+            <label for="analysis-run-select">
+              Run
+              <select id="analysis-run-select"></select>
+            </label>
+          </div>
+
+          <dl class="analysis-summary">
+            <div><dt>Segments</dt><dd id="analysis-segments">&mdash;</dd></div>
+            <div><dt>Observed duration</dt><dd id="analysis-duration">&mdash;</dd></div>
+            <div><dt>Start</dt><dd id="analysis-start">&mdash;</dd></div>
+            <div><dt>Integrity</dt><dd id="analysis-integrity">&mdash;</dd></div>
+          </dl>
+
+          <div class="timeline-heading">
+            <div>
+              <h3>Temperature timeline</h3>
+              <p>Observed time only. Unproven continuation intervals have unknown duration.</p>
+            </div>
+            <label for="analysis-probe-select">
+              Highlight
+              <select id="analysis-probe-select">
+                <option value="1">P1 · 0 cm</option>
+                <option value="2">P2 · −20 cm</option>
+                <option value="3">P3 · −40 cm</option>
+                <option value="4">P4 · −60 cm</option>
+                <option value="5">P5 · −80 cm</option>
+                <option value="6">P6 · −100 cm</option>
+                <option value="7">P7 · −120 cm</option>
+                <option value="8">P8 · −140 cm</option>
+              </select>
+            </label>
+          </div>
+          <div class="timeline" id="analysis-chart"></div>
+          <p class="power-gap-note" id="analysis-gap-note" hidden></p>
+
+          <div class="table-wrap analysis-table-wrap">
+            <table>
+              <caption>Per-probe measurements</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Probe</th>
+                  <th scope="col">Height</th>
+                  <th scope="col">Valid / missing</th>
+                  <th scope="col">Peak</th>
+                  <th scope="col">Mean</th>
+                  <th scope="col">Time at peak</th>
+                  <th scope="col">First 40 °C</th>
+                  <th scope="col">Minutes ≥ 80 °C</th>
+                  <th scope="col">Max heating</th>
+                </tr>
+              </thead>
+              <tbody id="analysis-probe-table"></tbody>
+            </table>
+          </div>
+
+          <section class="integrity-detail" aria-labelledby="integrity-title">
+            <h3 id="integrity-title">Integrity and interpretation</h3>
+            <ul id="analysis-integrity-list"></ul>
+          </section>
+        </section>
+      </section>
     </main>
 
     <aside class="update-notice" id="update-notice" role="status" aria-live="polite" hidden>
-      <p>A portal update is ready. Finish installation or probe setup before reloading.</p>
+      <p>A portal update is ready. Finish installation, probe setup, or record work before reloading.</p>
       <button class="button button--secondary" id="update-action" type="button" disabled>
         Reload update
       </button>
@@ -354,6 +508,24 @@
           <button class="button button--secondary" value="cancel">Back</button>
           <button class="button button--primary" id="confirm-write" value="confirm">
             Write and restart
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="remove-run-dialog" aria-labelledby="remove-run-title">
+      <form method="dialog">
+        <p class="section-label">Preserved-run removal</p>
+        <h2 id="remove-run-title">Remove this logical run?</h2>
+        <p id="remove-run-description"></p>
+        <p>
+          Every segment has a verified saved-file receipt. The logger will remove
+          the chain newest to oldest. Power removal may leave an older valid prefix.
+        </p>
+        <div class="actions">
+          <button class="button button--secondary" value="cancel">Keep on logger</button>
+          <button class="button button--primary" id="confirm-remove-run" value="confirm">
+            Remove preserved run
           </button>
         </div>
       </form>

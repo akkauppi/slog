@@ -61,6 +61,19 @@ class LogTests(unittest.TestCase):
         self.assertEqual(session.initial_rtc_source, "external_32k_xtal")
         self.assertEqual(session.samples[0].chip_temperature_c, 35.0)
 
+    def test_sample_anchored_max_duration_kind_is_named(self):
+        data = bytearray(fixture(version=2))
+        header_size = struct.unpack_from("<H", data, 10)[0]
+        data[51] = 3
+        data[53] = 30
+        struct.pack_into(
+            "<I", data, header_size - 4,
+            zlib.crc32(data[:header_size - 4]) & 0xFFFFFFFF,
+        )
+        session = logs.parse_session(data)
+        self.assertEqual(session.continuation_kind, "max_duration_sample_anchored")
+        self.assertEqual(session.continuation_delay_seconds, 30)
+
     def test_every_power_cut_offset_is_safe(self):
         complete = fixture(version=2)
         header_size = struct.unpack_from("<H", complete, 10)[0]
@@ -131,7 +144,8 @@ class AnalysisTests(unittest.TestCase):
         second = self.session(session_id=11, continuation_of=10, start=-20, count=5, pulse=False)
         run = sauna_analysis.build_run([first, second])
         self.assertEqual(len(run.breaks), 1)
-        self.assertEqual(run.points[5].observed_seconds - run.points[4].observed_seconds, 10)
+        self.assertEqual(run.breaks[0], run.points[4].observed_seconds)
+        self.assertEqual(run.points[5].observed_seconds - run.points[4].observed_seconds, 0)
         self.assertNotEqual(run.points[5].relative_seconds, run.points[5].observed_seconds)
 
     def test_every_working_probe_count_is_supported(self):

@@ -207,6 +207,30 @@ test("client serializes concurrent commands and validates normalized acknowledge
   await transport.close();
 });
 
+test("separate protocol clients share one transport-wide transaction queue", async () => {
+  const scan = scanLines(ROMS.slice(0, 1));
+  const port = new ScriptedPort(
+    new Map([
+      ["SYS INFO", (activePort) => {
+        setTimeout(() => activePort.enqueue(lines(infoLine())), 5);
+        return [];
+      }],
+      ["CFG SCAN", [lines(...scan)]],
+    ]),
+  );
+  const transport = new WebSerialTransport(port);
+  await transport.open();
+  const firstClient = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
+  const secondClient = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
+
+  const info = firstClient.info();
+  const discovered = secondClient.scan();
+  assert.equal((await info).product, "sauna_logger");
+  assert.equal((await discovered).probes[0].rom, ROMS[0]);
+  assert.deepEqual(port.commands, ["SYS INFO", "CFG SCAN"]);
+  await transport.close();
+});
+
 test("lost BEGIN acknowledgement triggers a serialized idempotent abort", async () => {
   const port = new ScriptedPort(
     new Map([

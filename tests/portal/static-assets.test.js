@@ -94,8 +94,15 @@ test("the portal has no third-party runtime assets", async () => {
   );
   assert.match(html, /free-form terminal[\s\S]*?not provided in this release/i);
   assert.match(html, /probe ROM addresses[\s\S]*?Review it before sharing/i);
-  assert.doesNotMatch(html, /<input\b|<textarea\b/i);
-  assert.doesNotMatch(html, /type=["']file["']/i);
+  assert.doesNotMatch(html, /<textarea\b/i);
+  const inputs = [...html.matchAll(/<input\b[^>]*>/gi)].map((match) => match[0]);
+  assert.equal(inputs.length, 1, "only the offline raw-log picker is exposed");
+  assert.match(inputs[0], /id=["']analysis-files["']/i);
+  assert.match(inputs[0], /type=["']file["']/i);
+  assert.match(inputs[0], /multiple/i);
+  assert.match(html, /data-portal-view="prepare"/);
+  assert.match(html, /data-portal-view="records"/);
+  assert.match(html, /data-portal-view="analyze"/);
 });
 
 test("assembled-probe commissioning is the primary portal workflow", async () => {

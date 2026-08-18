@@ -16,6 +16,11 @@ import {
 
 export const DEFAULT_BAUD_RATE = 115200;
 export const DEFAULT_RESPONSE_TIMEOUT_MS = 8000;
+// LOG_STATUS currently carries retention and commissioning diagnostics on one
+// line and can exceed the 512-byte SYS/CFG protocol limit. Receive framing is
+// deliberately a little wider; parseLine() continues to enforce 512 bytes for
+// every SYS/CFG message, while the log protocol applies this separate bound.
+export const MAXIMUM_SERIAL_RX_LINE_LENGTH = 1024;
 
 export class SerialTransportError extends Error {
   constructor(message, options) {
@@ -39,7 +44,7 @@ export class ProtocolTimeoutError extends Error {
  * malformed data once a named response frame has begun.
  */
 export class AsciiLineDecoder {
-  constructor(maximumLineLength = MAXIMUM_LINE_LENGTH) {
+  constructor(maximumLineLength = MAXIMUM_SERIAL_RX_LINE_LENGTH) {
     this.maximumLineLength = maximumLineLength;
     this.reset();
   }
@@ -69,7 +74,7 @@ export class AsciiLineDecoder {
           this._characters.length === this.maximumLineLength &&
           byte === 0x0d
         ) {
-          // CR is a line terminator component, not part of the 512-byte body.
+          // CR is a line terminator component, not part of the configured body.
           this._characters.push("\r");
         } else if (!this._malformed) {
           this._malformed = new ProtocolError("protocol line is too long");
@@ -127,6 +132,10 @@ export class WebSerialTransport {
     this._opened = false;
     this._closing = false;
     this._terminalError = null;
+    // Protocol messages have no request IDs. Every client sharing this port
+    // must therefore hold one transport-wide transaction until its complete
+    // response frame has been consumed.
+    this._transactionTail = Promise.resolve();
   }
 
   get isOpen() {
@@ -204,6 +213,15 @@ export class WebSerialTransport {
       }, Math.max(0, timeoutMs));
       this._waiters.push(waiter);
     });
+  }
+
+  runExclusive(operation) {
+    if (typeof operation !== "function") {
+      return Promise.reject(new TypeError("serial transaction must be a function"));
+    }
+    const result = this._transactionTail.then(operation, operation);
+    this._transactionTail = result.catch(() => {});
+    return result;
   }
 
   async close() {
@@ -294,8 +312,22 @@ export class WebSerialTransport {
   }
 
   _observeTraffic(entry) {
+    let observed = entry;
+    if (
+      entry.direction === "rx" &&
+      /^LOG_(?:CRASH_)?DATA(?:\s|$)/.test(entry.line)
+    ) {
+      // Diagnostics may describe a transfer, but must not retain or render the
+      // raw session/core-dump bytes carried as hexadecimal text.
+      observed = {
+        ...entry,
+        line: entry.line.startsWith("LOG_CRASH_DATA")
+          ? "LOG_CRASH_DATA payload=redacted"
+          : "LOG_DATA payload=redacted",
+      };
+    }
     try {
-      this._onTraffic?.(Object.freeze({ ...entry }));
+      this._onTraffic?.(Object.freeze({ ...observed }));
     } catch {
       // Read-only diagnostics must never alter serial protocol behavior.
     }
@@ -450,6 +482,9 @@ export class CommissioningProtocolClient {
   }
 
   _enqueue(operation) {
+    if (typeof this.transport.runExclusive === "function") {
+      return this.transport.runExclusive(operation);
+    }
     const result = this._tail.then(operation, operation);
     this._tail = result.catch(() => {});
     return result;

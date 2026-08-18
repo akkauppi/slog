@@ -87,16 +87,15 @@ line-oriented protocol intended for both this tool and the browser portal is
 documented in
 [`docs/probe-commissioning.md`](docs/probe-commissioning.md).
 
-The focused browser portal installs its own versioned, SHA-256-checked firmware
-package, verifies the running logger, and then provides the connect-one-at-a-time
-workflow without local tooling. It identifies P1 through P8, verifies the
-committed map after restart, and creates a local `sensor-map.json` backup. The
-static utility is designed for GitHub Pages and remains available offline after
-its files have been cached. It has no arbitrary firmware picker or whole-flash
-erase option. See
-[`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md) for
-browser requirements, recovery behavior, local serving, and deployment. The
-warm-one-at-a-time workflow remains in the Python tool for this first slice.
+The browser portal installs its own versioned, SHA-256-checked firmware package,
+verifies the running logger, and commissions a fully assembled eight-probe
+column by warming one metal tip at a time. The secondary bench method still
+supports connecting probes individually. It verifies the committed map after
+restart and creates a local `sensor-map.json` backup. The static utility is
+designed for GitHub Pages and remains available offline after its files have
+been cached. It has no arbitrary firmware picker or whole-flash erase option.
+See [`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md) for
+browser requirements, recovery behavior, local serving, and deployment.
 
 ## Session logging
 
@@ -204,6 +203,15 @@ refuses to delete a segment while another on-device session points to it:
 ```sh
 .venv/bin/python tools/logs.py delete 1
 ```
+
+The portal's **Records** section provides the guarded browser equivalent: it
+shows the rolling-store reserve and logical chains, supports CRC-validated raw
+downloads, and authorizes whole-run removal only after every segment has been
+saved and read back through the file-system picker. **Analyze** opens one or
+more `.slog` files entirely offline, groups only unambiguous continuations, and
+shows an eight-probe SVG timeline with explicit unknown-duration gaps. See
+[`docs/web-data-workspace.md`](docs/web-data-workspace.md) for the preservation
+and deletion gates.
 
 ## Installation geometry
 

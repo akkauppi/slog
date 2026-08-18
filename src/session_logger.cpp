@@ -61,7 +61,9 @@ struct __attribute__((packed)) SessionHeaderV2 {
   uint8_t resetReason;
   uint8_t continuationKind;
   uint8_t initialRtcSource;
-  uint8_t reserved2;
+  // For MaxDurationSampleAnchored, whole seconds from the predecessor's final
+  // captured sample to this segment's trigger. Zero means no proven timing.
+  uint8_t continuationDelaySeconds;
   uint32_t initialRtcHz;
   SensorDescriptor sensors[kSensorCount];
   uint32_t headerCrc;
@@ -251,6 +253,7 @@ void SessionLogger::resetIdleSamplingState() {
   sessionPeakCentiC_ = INT16_MIN;
   continuationOf_ = 0;
   continuationKind_ = ContinuationKind::None;
+  continuationAnchorAtMs_ = 0;
   hotContinuationEligible_ = false;
   interruptedSessionWasHot_ = false;
   haveLatestReading_ = false;
@@ -359,6 +362,7 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
     if (bitCount(reading.validMask) >= 6) {
       continuationOf_ = 0;
       continuationKind_ = ContinuationKind::None;
+      continuationAnchorAtMs_ = 0;
       hotContinuationEligible_ = false;
     }
     return;
@@ -369,6 +373,7 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
     if (hotContinuationEligible_ && interruptedSessionWasHot_) {
       continuationOf_ = interruptedSessionId_;
       continuationKind_ = ContinuationKind::ProbablePowerRestore;
+      continuationAnchorAtMs_ = 0;
     }
     return;
   }
@@ -433,7 +438,20 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
   header.continuationOf = continuationOf_;
   header.bootId = bootId_;
   header.resetReason = resetReason_;
-  header.continuationKind = static_cast<uint8_t>(continuationKind_);
+  ContinuationKind storedContinuationKind = continuationKind_;
+  if (storedContinuationKind == ContinuationKind::MaxDurationSampleAnchored) {
+    const uint32_t delaySeconds =
+        static_cast<uint32_t>(trigger.capturedAtMs - continuationAnchorAtMs_) /
+        1000U;
+    if (delaySeconds > 0 && delaySeconds <= UINT8_MAX) {
+      header.continuationDelaySeconds = static_cast<uint8_t>(delaySeconds);
+    } else {
+      // Preserve the link, but use the older conservative kind when the
+      // measured whole-second delay cannot fit in the v2 header byte.
+      storedContinuationKind = ContinuationKind::MaxDuration;
+    }
+  }
+  header.continuationKind = static_cast<uint8_t>(storedContinuationKind);
   header.initialRtcSource = static_cast<uint8_t>(rtc_clk_slow_freq_get());
   header.initialRtcHz = rtc_clk_slow_freq_get_hz();
   for (uint8_t index = 0; index < kSensorCount; ++index) {
@@ -483,6 +501,7 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
                 currentSessionId_, ringCount_);
   continuationOf_ = 0;
   continuationKind_ = ContinuationKind::None;
+  continuationAnchorAtMs_ = 0;
   hotContinuationEligible_ = false;
   return true;
 }
@@ -517,7 +536,8 @@ void SessionLogger::evaluateActive(const SensorReading& reading) {
              kEndHoldMs) {
     finishSession(FinishReason::NormalCooling,
                   static_cast<int32_t>(reading.capturedAtMs - triggerAtMs_) /
-                      1000);
+                      1000,
+                  reading.capturedAtMs);
     return;
   }
 
@@ -525,7 +545,8 @@ void SessionLogger::evaluateActive(const SensorReading& reading) {
       kMaxSessionMs) {
     finishSession(FinishReason::MaxDuration,
                   static_cast<int32_t>(reading.capturedAtMs - triggerAtMs_) /
-                      1000);
+                      1000,
+                  reading.capturedAtMs);
   }
 }
 
@@ -587,7 +608,8 @@ bool SessionLogger::appendFooter(const void* footer, size_t size) {
   return written;
 }
 
-void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds) {
+void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds,
+                                  uint32_t finishedAtMs) {
   if (!active_) return;
   if (!commitPending()) {
     interruptActiveSession("final_block_write_failed");
@@ -611,9 +633,10 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds) {
   currentSessionId_ = 0;
   if (reason == FinishReason::MaxDuration) {
     continuationOf_ = finishedId;
-    continuationKind_ = ContinuationKind::MaxDuration;
+    continuationKind_ = ContinuationKind::MaxDurationSampleAnchored;
+    continuationAnchorAtMs_ = finishedAtMs;
     startCandidate_ = true;
-    aboveStartSinceMs_ = millis();
+    aboveStartSinceMs_ = finishedAtMs;
   }
 }
 
@@ -630,6 +653,7 @@ void SessionLogger::interruptActiveSession(const char* reason) {
   hotContinuationEligible_ = true;
   continuationOf_ = interruptedId;
   continuationKind_ = ContinuationKind::ProbablePowerRestore;
+  continuationAnchorAtMs_ = 0;
 }
 
 String SessionLogger::sessionPath(uint32_t id) const {
@@ -1324,6 +1348,7 @@ bool SessionLogger::processCommand(const String& command) {
         coolingCandidate_ = false;
         continuationOf_ = 0;
         continuationKind_ = ContinuationKind::None;
+        continuationAnchorAtMs_ = 0;
         hotContinuationEligible_ = false;
         findInterruptedSession();
       }
@@ -1350,9 +1375,13 @@ void SessionLogger::printStatus() {
           ? latestReading_.chipCentiC
           : INT16_MIN;
   const size_t available = freeBytes();
+  const uint32_t continuationPendingId =
+      continuationOf_ ? continuationOf_
+                      : (hotContinuationEligible_ ? interruptedSessionId_ : 0);
   Serial.printf("LOG_STATUS fs=%u active=%u id=%u total=%u used=%u free=%u "
                 "boot=%u reset=%u sensors=%u chip_centi_c=%d rtc_source=%u "
-                "rtc_hz=%u interrupted=%u coredump=%u coredump_bytes=%u "
+                "rtc_hz=%u interrupted=%u continuation_pending=%u coredump=%u "
+                "coredump_bytes=%u "
                 "retention=rolling reserve_ok=%u reserve_required=%u "
                 "retention_deleted_runs=%u retention_deleted_segments=%u "
                 "retention_last_run=%u retention_last_segment=%u "
@@ -1369,7 +1398,9 @@ void SessionLogger::printStatus() {
                 static_cast<unsigned>(available),
                 bootId_, resetReason_, validSensors, chipCentiC,
                 static_cast<unsigned>(rtc_clk_slow_freq_get()),
-                rtc_clk_slow_freq_get_hz(), interruptedSessionId_, coreDumpValid,
+                rtc_clk_slow_freq_get_hz(), interruptedSessionId_,
+                continuationPendingId,
+                coreDumpValid,
                 coreDumpValid ? static_cast<unsigned>(coreDumpSize) : 0,
                 filesystemReady_ && available >= kSessionReserveBytes,
                 static_cast<unsigned>(kSessionReserveBytes),
@@ -1435,7 +1466,10 @@ void SessionLogger::listSessions() {
 }
 
 void SessionLogger::downloadSession(uint32_t id) {
-  if (!filesystemReady_ || (active_ && id == currentSessionId_)) {
+  // A hex transfer is synchronous and can occupy the serial loop for long
+  // enough to disturb acquisition timing. Keep every raw transfer out of an
+  // active measurement, including transfers of older immutable sessions.
+  if (!filesystemReady_ || active_) {
     Serial.println("LOG_ERROR unavailable_or_active");
     return;
   }
@@ -1511,6 +1545,13 @@ void SessionLogger::downloadCoreDump() {
 bool SessionLogger::deleteSession(uint32_t id) {
   if (!filesystemReady_ || (active_ && id == currentSessionId_)) return false;
   if (retentionPendingSegment_) return false;
+  // The next segment has not written its header yet. Removing this parent
+  // would silently discard the only durable link for a max-duration or
+  // probable-power continuation.
+  const uint32_t continuationPendingId =
+      continuationOf_ ? continuationOf_
+                      : (hotContinuationEligible_ ? interruptedSessionId_ : 0);
+  if (id && continuationPendingId == id) return false;
   if (!id || !LittleFS.exists(sessionPath(id))) return false;
 
   // Refuse to orphan a continuation. Linked runs can still be removed
@@ -1544,11 +1585,6 @@ bool SessionLogger::deleteSession(uint32_t id) {
   if (removed && interruptedSessionId_ == id) {
     interruptedSessionId_ = 0;
     interruptedSessionWasHot_ = false;
-  }
-  if (removed && continuationOf_ == id) {
-    continuationOf_ = 0;
-    continuationKind_ = ContinuationKind::None;
-    hotContinuationEligible_ = false;
   }
   return removed;
 }

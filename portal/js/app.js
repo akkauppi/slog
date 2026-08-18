@@ -24,6 +24,7 @@ import {
 } from "./serial-transport.js";
 import { FlashInstallationUi } from "./flash-ui.js";
 import { DiagnosticTranscript } from "./diagnostics.js";
+import { DataWorkspace } from "./data-workspace.js";
 
 const PENDING_STORAGE_KEY = "sauna-logger:probe-map:pending:v1";
 const VERIFIED_STORAGE_KEY = "sauna-logger:probe-map:verified:v1";
@@ -107,6 +108,7 @@ let updateReadyToReload = false;
 let initialTaskRendered = false;
 let flashUi = null;
 let installedFirmwareExpectation = null;
+let dataWorkspace = null;
 
 const diagnostics = new DiagnosticTranscript({
   list: protocolLog,
@@ -509,7 +511,7 @@ function updateTransactionUi() {
   updateAction.disabled = busy || !waitingServiceWorker || workflowUnsafeToLeave();
 }
 
-function workflowUnsafeToLeave() {
+function setupWorkflowUnsafeToLeave() {
   if (flashUi?.unsafeToUnload) return true;
   const snapshot = controller?.snapshot;
   if (!snapshot) return false;
@@ -530,6 +532,10 @@ function workflowUnsafeToLeave() {
     snapshot.phase === CommissioningPhase.RECOVERY_REQUIRED &&
     snapshot.commitMayHaveReachedDevice
   );
+}
+
+function workflowUnsafeToLeave() {
+  return setupWorkflowUnsafeToLeave() || Boolean(dataWorkspace?.unsafeToLeave);
 }
 
 function showConnect({ afterInstall = false } = {}) {
@@ -610,7 +616,52 @@ async function closeTransport() {
     transport = null;
     client = null;
     setConnection(false);
+    dataWorkspace?.handleConnectionClosed();
   }
+}
+
+async function discardNewRecordsTransport() {
+  try {
+    await closeTransport();
+  } catch (error) {
+    logActivity(`Could not close rejected records port cleanly · ${error.message}`);
+  } finally {
+    selectedPort = null;
+    controller = null;
+  }
+}
+
+async function connectRecordsLogger() {
+  let openedForRecords = false;
+  if (!transport?.isOpen) {
+    const port = await requestSerialPort();
+    openedForRecords = true;
+    try {
+      await attachPort(port);
+      controller = null;
+    } catch (error) {
+      await discardNewRecordsTransport();
+      throw error;
+    }
+  }
+  try {
+    const recordsClient = new CommissioningProtocolClient(transport);
+    const info = requireCompatibleDevice(await recordsClient.info());
+    updateDeviceDetails(info);
+    return { transport, info };
+  } catch (error) {
+    if (openedForRecords) {
+      await discardNewRecordsTransport();
+    }
+    throw error;
+  }
+}
+
+async function disconnectRecordsLogger() {
+  await closeTransport();
+  controller = null;
+  selectedPort = null;
+  if (dataWorkspace?.activeView === "prepare") showConnect();
 }
 
 async function chooseInitialLogger() {
@@ -1590,6 +1641,7 @@ function handlePhysicalDisconnect(event) {
   if (disconnectedPort && disconnectedPort !== selectedPort) return;
   setConnection(false, "Logger disconnected");
   logActivity("USB logger disconnected");
+  dataWorkspace?.handleConnectionClosed();
   if (controller?.snapshot.phase === CommissioningPhase.COMPLETE) {
     return;
   }
@@ -1726,7 +1778,13 @@ writeDialog.addEventListener("close", () => {
 });
 
 disconnectButton.dataset.available = "true";
-disconnectButton.addEventListener("click", () => void runAction(disconnectLogger));
+disconnectButton.addEventListener("click", () => {
+  if (dataWorkspace?.activeView === "records") {
+    void dataWorkspace.disconnect();
+    return;
+  }
+  void runAction(disconnectLogger);
+});
 
 updateAction.addEventListener("click", () => {
   if (workflowUnsafeToLeave()) return;
@@ -1775,5 +1833,25 @@ if (webSerialSupported()) {
 buildProbeTable();
 explainEnvironment();
 initializeServiceWorker();
+dataWorkspace = new DataWorkspace({
+  document,
+  window,
+  connectLogger: connectRecordsLogger,
+  disconnectLogger: disconnectRecordsLogger,
+  environmentSupported: portalEnvironmentSupported,
+  canNavigate: () => !setupWorkflowUnsafeToLeave(),
+  onNavigationBlocked: (message) => {
+    if (dataWorkspace?.activeView === "prepare") setMessage(message, "error");
+  },
+  onUnsafeChange: () => {
+    disconnectButton.disabled = busy || Boolean(dataWorkspace?.operation);
+    updateAction.disabled =
+      busy ||
+      Boolean(dataWorkspace?.operation) ||
+      !waitingServiceWorker ||
+      workflowUnsafeToLeave();
+  },
+  onActivity: logActivity,
+});
 logActivity("Portal opened · managed workflows active · manual commands not provided");
 initializeFlashUi();

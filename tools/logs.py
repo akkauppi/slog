@@ -38,7 +38,12 @@ RESET_REASONS = {
     5: "interrupt_watchdog", 6: "task_watchdog", 7: "other_watchdog",
     8: "deep_sleep", 9: "brownout", 10: "sdio",
 }
-CONTINUATION_KINDS = {0: "none", 1: "max_duration", 2: "probable_power_restore"}
+CONTINUATION_KINDS = {
+    0: "none",
+    1: "max_duration",
+    2: "probable_power_restore",
+    3: "max_duration_sample_anchored",
+}
 RTC_SOURCES = {0: "internal_rc", 1: "external_32k_xtal", 2: "internal_8m_div256"}
 
 
@@ -70,6 +75,7 @@ class Session:
     boot_id: int = 0
     reset_reason: str = "unknown"
     continuation_kind: str = "none"
+    continuation_delay_seconds: int = 0
     initial_rtc_source: str = "unknown"
     initial_rtc_hz: int = 0
 
@@ -102,6 +108,7 @@ def parse_session(data: bytes) -> Session:
     boot_id = values[15] if version == 2 else 0
     reset_reason = RESET_REASONS.get(values[16], f"reason_{values[16]}") if version == 2 else "unknown"
     continuation_kind = CONTINUATION_KINDS.get(values[17], f"kind_{values[17]}") if version == 2 else ("max_duration" if continuation_of else "none")
+    continuation_delay_seconds = values[19] if version == 2 else 0
     initial_rtc_source = RTC_SOURCES.get(values[18], f"source_{values[18]}") if version == 2 else "unknown"
     initial_rtc_hz = values[20] if version == 2 else 0
     offset = header_struct.size
@@ -165,7 +172,8 @@ def parse_session(data: bytes) -> Session:
     return Session(
         session_id, sample_interval_ms, sensors, samples, finalized, finish_reason,
         warnings, continuation_of, version, boot_id, reset_reason,
-        continuation_kind, initial_rtc_source, initial_rtc_hz
+        continuation_kind, continuation_delay_seconds, initial_rtc_source,
+        initial_rtc_hz
     )
 
 
@@ -307,6 +315,7 @@ def session_report(session: Session) -> dict[str, object]:
         "reset_reason": session.reset_reason,
         "continuation_of": session.continuation_of or None,
         "continuation_kind": session.continuation_kind,
+        "continuation_delay_seconds": session.continuation_delay_seconds or None,
         "initial_rtc_source": session.initial_rtc_source,
         "initial_rtc_hz": session.initial_rtc_hz or None,
         "state": "finalized" if session.finalized else "interrupted",

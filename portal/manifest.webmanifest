@@ -1,7 +1,7 @@
 {
-  "name": "Sauna logger install and setup",
+  "name": "Sauna logger local portal",
   "short_name": "Sauna logger",
-  "description": "Install verified firmware and commission eight temperature probes over USB.",
+  "description": "Prepare a logger, preserve raw records, and analyze sauna measurements locally.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

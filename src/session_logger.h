@@ -38,6 +38,11 @@ enum class ContinuationKind : uint8_t {
   None = 0,
   MaxDuration = 1,
   ProbablePowerRestore = 2,
+  // The successor header records the whole-second delay from the final sample
+  // to its trigger, allowing analysis to remove duplicated pre-trigger overlap
+  // at the log's timestamp resolution. Older kind 1 logs remain readable but
+  // must be treated conservatively.
+  MaxDurationSampleAnchored = 3,
 };
 
 class SessionLogger {
@@ -90,6 +95,7 @@ class SessionLogger {
   uint32_t bootId_ = 0;
   uint32_t triggerAtMs_ = 0;
   uint32_t aboveStartSinceMs_ = 0;
+  uint32_t continuationAnchorAtMs_ = 0;
   uint32_t coolingSinceMs_ = 0;
   int16_t sessionPeakCentiC_ = INT16_MIN;
   bool startCandidate_ = false;
@@ -131,7 +137,8 @@ class SessionLogger {
   void evaluateActive(const SensorReading& reading);
   bool startSession(const SensorReading& trigger);
   void interruptActiveSession(const char* reason);
-  void finishSession(FinishReason reason, int32_t finalSeconds);
+  void finishSession(FinishReason reason, int32_t finalSeconds,
+                     uint32_t finishedAtMs);
   bool commitPending();
   bool appendBlock(const SensorReading* readings, uint16_t count);
   bool appendFooter(const void* footer, size_t size);
