@@ -41,6 +41,13 @@ To enter BOOT mode:
 Close PlatformIO and other serial monitors first. If the port does not appear,
 repeat the sequence rather than choosing an unrelated serial device.
 
+Web Serial access is exclusive across applications, tabs, and website origins.
+Before moving from the local portal to GitHub Pages, disconnect the logger and
+close the localhost tab; also close any other portal tab or serial monitor. If
+the chooser lists the board but opening it fails, close those competing users,
+unplug and reconnect the board, and try again. The portal reports the browser's
+underlying error name and message when they are available.
+
 The page loads only `./generated/firmware/manifest.json` from its own HTTPS or
 localhost origin. Manifest schema version 2 fixes the product, commissioning
 protocol version 1, ESP32-C3 target, XIAO board, 4 MB flash,

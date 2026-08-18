@@ -11,6 +11,7 @@ import {
   RecoveryPhase,
   restoreOrRepairRecoveryPackage,
 } from "./recovery-store.js";
+import { serialPortOpenErrorMessage } from "./serial-transport.js";
 
 const MANIFEST_URL = new URL("../generated/firmware/manifest.json", import.meta.url);
 
@@ -27,6 +28,8 @@ function firmwareErrorMessage(error, unsafe) {
   if (error?.name === "SecurityError") {
     return "The browser refused serial access. Use this top-level HTTPS or localhost page and try again.";
   }
+  const serialOpenMessage = serialPortOpenErrorMessage(error, "bootloader device");
+  if (serialOpenMessage) return serialOpenMessage;
   const code = String(error?.code ?? "");
   if (["manifest-fetch-failed", "manifest-unavailable", "http-error"].includes(code)) {
     return "This portal build does not contain a generated firmware release. Build or publish the verified package before installing.";
@@ -757,13 +760,15 @@ export class FlashInstallationUi {
         );
       }
     } catch (error) {
+      const message = firmwareErrorMessage(error, this.unsafeToUnload);
+      this.onActivity(`Bootloader connection failed · ${message}`);
       if (this.controller?.snapshot.canCancel) {
         await this.#showCancelableError(error);
       } else if (this.controller?.snapshot.retry === FlashRetry.CONNECT) {
         this.#showRecovery(error);
       } else {
         this.#showReadyToConnect();
-        this.#setMessage(firmwareErrorMessage(error, this.unsafeToUnload), "error");
+        this.#setMessage(message, "error");
       }
     } finally {
       this.#setBusy(false);

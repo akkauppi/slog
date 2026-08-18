@@ -1,4 +1,4 @@
-# Sauna temperature measurement
+# SLOG — sauna temperature logger
 
 Power-loss-resilient session logger for a Seeed Studio XIAO ESP32-C3 and eight
 powered DS18B20 temperature sensors. Wi-Fi is disabled. Measurements are
@@ -18,6 +18,23 @@ Like every raw `.slog`, it still contains stable probe ROM identifiers. See
 observations and commands used to regenerate its CSV and interactive report.
 
 [![Eight probe temperatures from the first full sauna run](data/2026-08-16-sauna/session-1-main-chart.png)](docs/runs/2026-08-16-session-1.md)
+
+## Browser portal
+
+Open the hosted portal at **[akkauppi.github.io/slog](https://akkauppi.github.io/slog/)**.
+It can install the validated firmware bundle, commission an assembled probe
+column, preserve and manage logger records, analyze raw `.slog` files, and
+export selected data as CSV or Excel. The selected temperature probe also has a
+heating/cooling-rate chart, and linked power-restored segments can be viewed
+either as one run or separately without changing the raw metadata.
+
+Logger access requires Web Serial, so use a current desktop Chrome or Edge on
+Windows, macOS, or Linux. File-only analysis works in other modern browsers.
+All processing is local, nothing is uploaded, and the portal remains available
+offline after its application files and firmware package have been cached.
+GitHub Pages rebuilds the portal and its commit-identified firmware package
+from `main`; local development must use `tools/serve_portal.py` as described in
+[`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md).
 
 ## Wiring
 

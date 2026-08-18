@@ -70,6 +70,43 @@ export class ProtocolTimeoutError extends Error {
   }
 }
 
+function errorChain(error) {
+  const chain = [];
+  const visited = new Set();
+  let current = error;
+  while (current && typeof current === "object" && !visited.has(current)) {
+    chain.push(current);
+    visited.add(current);
+    current = current.cause;
+  }
+  return chain;
+}
+
+/**
+ * Return recovery guidance only for failures that happened while claiming a
+ * selected Web Serial port. Handshake and mid-session transport failures must
+ * retain their more specific handling.
+ */
+export function serialPortOpenErrorMessage(error, device = "logger") {
+  const chain = errorChain(error);
+  const openFailure = chain.some((item) =>
+    /(?:could not|couldn't|failed|unable) to open (?:the )?(?:selected )?serial port/i.test(
+      String(item?.message ?? ""),
+    )
+  );
+  if (!openFailure) return null;
+
+  const browserError = chain.find((item) =>
+    ["InvalidStateError", "NetworkError", "NotReadableError"].includes(
+      String(item?.name ?? ""),
+    ),
+  );
+  const detail = browserError?.name
+    ? ` Browser detail: ${browserError.name}${browserError.message ? ` — ${String(browserError.message).replace(/\s+/g, " ").slice(0, 160)}` : ""}.`
+    : "";
+  return `Could not open the selected ${device}. Close other portal tabs (including localhost), PlatformIO, and serial monitors, then unplug and reconnect the board before trying again.${detail}`;
+}
+
 /**
  * Incrementally frame ASCII lines from arbitrary Web Serial byte chunks.
  *

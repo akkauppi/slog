@@ -8,6 +8,7 @@ import {
   ProtocolTimeoutError,
   SerialTransportError,
   WebSerialTransport,
+  serialPortOpenErrorMessage,
 } from "../../portal/js/serial-transport.js";
 import { ROMS, configurationLines, infoLine, scanLines } from "./fixtures.js";
 
@@ -69,6 +70,39 @@ class ScriptedPort {
 function lines(...values) {
   return `${values.flat().join("\r\n")}\r\n`;
 }
+
+test("serial open failures explain exclusive access and retain browser detail", () => {
+  const browserError = new Error("Failed to open serial port.");
+  browserError.name = "NetworkError";
+  const wrapped = new SerialTransportError("could not open the serial port", {
+    cause: browserError,
+  });
+
+  const message = serialPortOpenErrorMessage(wrapped);
+  assert.match(message, /Close other portal tabs \(including localhost\)/);
+  assert.match(message, /PlatformIO/);
+  assert.match(message, /NetworkError — Failed to open serial port/);
+  assert.equal(
+    serialPortOpenErrorMessage(new SerialTransportError("serial port disconnected")),
+    null,
+  );
+});
+
+test("serial open guidance recognizes a flasher error chain", () => {
+  const browserError = new Error("Failed to open the serial port");
+  browserError.name = "InvalidStateError";
+  const adapterError = new Error("Failed to open the serial port", {
+    cause: browserError,
+  });
+  const workflowError = new Error("Failed to open the serial port", {
+    cause: adapterError,
+  });
+
+  assert.match(
+    serialPortOpenErrorMessage(workflowError, "bootloader device"),
+    /selected bootloader device/,
+  );
+});
 
 test("ASCII line decoder handles arbitrary chunks, CRLF, and malformed records", () => {
   const decoderUnderTest = new AsciiLineDecoder(8);

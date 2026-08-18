@@ -1,6 +1,8 @@
 # Community project plan
 
-Status: agreed direction; implementation is planned in incremental slices.
+Status: agreed direction; the logger, commissioning, retention, and local portal
+foundation is implemented, while hardware publication and community data work
+remain planned in incremental slices.
 
 Current handoff: [`community-project-status.md`](community-project-status.md).
 
@@ -73,26 +75,21 @@ properties:
 
 ## Current foundation and blockers
 
-The repository already has a strong binary log format, power-loss recovery,
-USB retrieval, a tested Python parser, interactive offline reports, and an
-example real-world dataset. These should be evolved rather than replaced.
+The repository has a strong binary log format, power-loss recovery, safe rolling
+retention, generic probe commissioning, USB retrieval, tested Python and browser
+parsers, interactive offline reports, a GitHub Pages portal, and an example
+real-world dataset. These should be evolved rather than replaced.
 
 Before inviting community builders, the following blockers need correction:
 
-- The eight owner-specific ROM addresses are hard-coded separately in sample
-  acquisition and log descriptors. `sensor-map.json` is not consumed by the
-  build, so a cloned firmware image cannot work with another builder's probes.
-- The documented mapping utility expects ROM-address temperature telemetry that
-  the current firmware does not emit. There is no separate discovery firmware
-  environment, so the documented commissioning path is not currently usable.
-- The `origin/main` firmware has only a simple oldest-session cleanup. The
-  bounded, run-aware replacement is implemented on the unmerged Slice 1 branch
-  recorded in the current handoff and still needs review and hardware testing.
 - Setup assumes a pre-existing repository virtual environment and omits a full
   BOM, mechanical design, tested harness, cross-platform installation path,
   safety guide, troubleshooting flow, and calibration procedure.
-- There is no public metadata schema, global run identity, browser utility,
-  catalog, contribution policy, CI release pipeline, or explicit license.
+- Retention and commissioning have automated coverage, but the repository still
+  needs recorded hardware fault-injection and broader cross-platform portal
+  verification before a public hardware release.
+- There is no public metadata schema, global run identity, catalog,
+  contribution policy, curated intake, or explicit project license.
 
 ## Development workflow
 
@@ -123,11 +120,16 @@ coherent delivery slice. Do not accumulate the redesign on a long-lived
 
 ### Slice 0: document the direction
 
+Status: delivered and maintained by this plan and the rolling status document.
+
 - Keep this roadmap current as decisions change.
 - Link it from the main README.
 - Treat later slices as planned behavior, not existing capability.
 
 ### Slice 1: safe rolling retention
+
+Status: implemented on `main`; recorded hardware fault-injection remains a
+release-validation task.
 
 - Require 128 KiB free immediately before opening a session, enough for a full
   12-hour recording plus filesystem margin. Retire runs only at this pre-start
@@ -155,6 +157,8 @@ the operating guidance still calls for CRC-validated downloads after every
 measurement.
 
 ### Slice 2: generic probe commissioning
+
+Status: implemented on `main` for both the Python tools and browser portal.
 
 - Replace compile-time probe arrays with one runtime configuration used by both
   acquisition and log descriptors.
@@ -205,13 +209,18 @@ system is primary and the alternative is shown in parentheses.
 
 ### Slice 4: offline-first browser device console
 
-Build one installable, offline-first static HTTPS application in this
-repository. The proposed stack is Astro and TypeScript for the site, with
-Preact for the interactive console. Dependencies and assets are pinned and
-self-hosted. After an initial load or installation, the building instructions,
-bundled firmware, commissioning, log retrieval, and later local analysis should
-remain usable without a network connection. Fetching updates, browsing the
-latest catalog, and submitting a record require a connection. There is no
+Status: the first portal is implemented as dependency-free static HTML, CSS,
+and JavaScript rather than the originally proposed Astro/Preact stack. It
+includes guarded factory/recovery flashing, commissioning, records, local
+analysis, exports, and guarded whole-run deletion. Routine wired OTA remains
+deferred.
+
+Maintain one installable, offline-first static HTTPS application in this
+repository. Its dependency-free HTML, CSS, and JavaScript assets are pinned and
+self-hosted. After an initial load or installation, the bundled firmware,
+commissioning, log retrieval, and local analysis should remain usable without a
+network connection once their required assets are cached. Fetching updates, a
+future catalog, and future record submission require a connection. There is no
 analytics or automatic upload.
 
 The console will provide:
@@ -228,13 +237,14 @@ The console will provide:
 - A guided probe-discovery and mapping wizard, configuration backup, explicit
   first-use filesystem initialization, and a preflight health check.
 - Session listing and retrieval. A file is offered for saving only after the
-  declared byte count and transfer CRC agree. The UI never overwrites an
-  existing local file and has no session-delete or core-dump-erase controls in
-  its first release.
+  declared byte count and transfer CRC agree. Whole-run removal remains guarded
+  by verified preservation or an explicit unverified-copy override, exact-byte
+  revalidation, continuation protection, and newest-first ordering. The portal
+  has no format or core-dump-erase control.
 
 The primary outcome of this slice is a safe browser path from released firmware
-to a preserved local `.slog` file. Analysis and publishing remain separate
-slices even though they share the same portal shell.
+to preserved and locally analyzed `.slog` files. Publishing remains a separate
+slice even though it will share the same portal shell.
 
 The planned wired update starts with
 `FW BEGIN size=<bytes> sha256=<hex>`, followed by sequence-numbered 1 KiB binary
@@ -253,6 +263,9 @@ fallback. Useful implementation references are:
 - [Seeed XIAO ESP32-C3 recovery procedure](https://wiki.seeedstudio.com/XIAO_ESP32C3_Getting_Started/)
 
 ### Slice 5: browser analysis and minimum metadata
+
+Status: local parsing, charts, run/per-segment views, derivatives, and CSV/XLSX
+exports are implemented. Submission metadata and publishing are not.
 
 - Port binary parsing and pure analysis math to a TypeScript core running in a
   Web Worker. Differential fixtures must produce the same results as the Python
