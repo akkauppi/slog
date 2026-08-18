@@ -3,10 +3,16 @@ import test from "node:test";
 
 import {
   CommitOutcomeUnknownError,
+  CommissioningMethod,
   CommissioningPhase,
   CommissioningWorkflowError,
   ConnectCommissioningController,
+  WARM_BASELINE_MAX_SPAN_C,
+  WARM_BASELINE_SCAN_COUNT,
   buildMappingDocument,
+  buildWarmBaseline,
+  evaluateWarmScan,
+  matchPendingMapping,
   parseMappingDocument,
   serializeMappingDocument,
   verifyCommittedReadback,
@@ -23,6 +29,7 @@ const ROMS = Object.freeze([
   "28939352000000D0",
   "2801F3520000001E",
 ]);
+const OTHER_ROM = "280102030405069E";
 
 function deviceInfo(overrides = {}) {
   return {
@@ -62,18 +69,41 @@ function configuration(
 
 function scan(
   roms,
-  { mapped = false, missingTemperature = [], busCount = roms.length, overflow = false } = {},
+  {
+    mapped = false,
+    missingTemperature = [],
+    temperatures = {},
+    busCount = roms.length,
+    overflow = false,
+  } = {},
 ) {
   const missing = new Set(missingTemperature);
   return {
     probes: roms.map((rom, index) => ({
       rom,
-      temperatureC: missing.has(rom) ? null : 20 + index / 4,
+      temperatureC: missing.has(rom)
+        ? null
+        : Object.hasOwn(temperatures, rom)
+          ? temperatures[rom]
+          : 20 + index / 4,
       mappedPosition: mapped ? ROMS.indexOf(rom) + 1 : 0,
     })),
     busCount,
     overflow,
   };
+}
+
+function warmBaselineScans({ spans = {}, orders = [] } = {}) {
+  const offsets = [-0.2, 0.1, 0, 0.2, -0.1];
+  return offsets.map((offset, scanIndex) => {
+    const temperatures = Object.fromEntries(
+      ROMS.map((rom, romIndex) => {
+        const spanOffset = spans[rom]?.[scanIndex] ?? offset;
+        return [rom, 20 + romIndex / 4 + spanOffset];
+      }),
+    );
+    return scan(orders[scanIndex] ?? ROMS, { temperatures });
+  });
 }
 
 class FakeClient {
@@ -216,6 +246,47 @@ test("mapping documents match the Python-compatible partial and verified shape",
   assert.equal(`${JSON.stringify(verified, null, 2)}\n`, serializeMappingDocument(verified));
 });
 
+test("saved pending mappings match only a complete exact active configuration", () => {
+  const active = configuration(ROMS, {
+    generation: 7,
+    crc32: "89ABCDEF",
+  });
+  const pending = {
+    ...buildMappingDocument(ROMS),
+    portal_phase: CommissioningPhase.RECOVERY_REQUIRED,
+    commit_outcome: "unknown",
+  };
+
+  assert.deepEqual(matchPendingMapping(pending, active), {
+    roms: ROMS,
+    generation: 7,
+    crc32: "89ABCDEF",
+  });
+  assert.deepEqual(
+    matchPendingMapping(
+      { ...pending, commit_generation: 7, commit_crc32: "89abcdef" },
+      active,
+    ),
+    { roms: ROMS, generation: 7, crc32: "89ABCDEF" },
+  );
+  assert.equal(matchPendingMapping(buildMappingDocument(ROMS.slice(0, 7)), active), null);
+
+  const reordered = [...ROMS];
+  [reordered[0], reordered[1]] = [reordered[1], reordered[0]];
+  assert.equal(matchPendingMapping(buildMappingDocument(reordered), active), null);
+  assert.equal(
+    matchPendingMapping(
+      { ...pending, commit_generation: 8, commit_crc32: "89ABCDEF" },
+      active,
+    ),
+    null,
+  );
+  assert.equal(
+    matchPendingMapping({ ...pending, commit_generation: 7 }, active),
+    null,
+  );
+});
+
 test("mapping document loading rejects reordered geometry and partial verification metadata", () => {
   const reordered = buildMappingDocument(ROMS.slice(0, 2));
   reordered.sensors[1].position_from_reference_end = 8;
@@ -229,6 +300,93 @@ test("mapping document loading rejects reordered geometry and partial verificati
   assert.throws(
     () => parseMappingDocument(incomplete),
     (error) => error.code === "invalid-mapping-document",
+  );
+});
+
+test("warm baseline uses five per-ROM medians independent of discovery order", () => {
+  const scans = warmBaselineScans({
+    orders: [ROMS, [...ROMS].reverse(), ROMS, [...ROMS].reverse(), ROMS],
+  });
+  const baseline = buildWarmBaseline(scans);
+
+  assert.equal(WARM_BASELINE_SCAN_COUNT, 5);
+  assert.equal(WARM_BASELINE_MAX_SPAN_C, 0.5);
+  assert.equal(Object.keys(baseline).length, 8);
+  assert.equal(baseline[ROMS[0]], 20);
+  assert.equal(baseline[ROMS[7]], 21.75);
+});
+
+test("warm baseline rejects incomplete, changing, invalid, and unstable probe scans", () => {
+  assert.throws(
+    () => buildWarmBaseline(warmBaselineScans().slice(0, 4)),
+    (error) => error.code === "invalid-baseline-scan-count",
+  );
+
+  const incomplete = warmBaselineScans();
+  incomplete[2] = scan(ROMS.slice(0, 7));
+  assert.throws(
+    () => buildWarmBaseline(incomplete),
+    (error) => error.code === "probe-set-mismatch",
+  );
+
+  const changed = warmBaselineScans();
+  const changedRoms = [OTHER_ROM, ...ROMS.slice(1)];
+  changed[2] = scan(changedRoms);
+  assert.throws(
+    () => buildWarmBaseline(changed),
+    (error) => error.code === "probe-set-mismatch",
+  );
+
+  const missingTemperature = warmBaselineScans();
+  missingTemperature[1] = scan(ROMS, { missingTemperature: [ROMS[3]] });
+  assert.throws(
+    () => buildWarmBaseline(missingTemperature),
+    (error) => error.code === "missing-temperature",
+  );
+
+  const unstable = warmBaselineScans({
+    spans: { [ROMS[4]]: [-0.3, 0.3, 0, 0.2, -0.1] },
+  });
+  assert.throws(
+    () => buildWarmBaseline(unstable),
+    (error) => error.code === "unstable-warm-baseline",
+  );
+});
+
+test("warm scan selection requires an exact set, clear rise, and last-probe margin from zero", () => {
+  const baseline = buildWarmBaseline(warmBaselineScans());
+  const temperatures = { ...baseline, [ROMS[0]]: baseline[ROMS[0]] + 3.5 };
+  let outcome = evaluateWarmScan(scan(ROMS, { temperatures }), baseline);
+  assert.equal(outcome.candidate.rom, ROMS[0]);
+  assert.equal(outcome.accepted.rom, ROMS[0]);
+
+  temperatures[ROMS[1]] = baseline[ROMS[1]] + 2.75;
+  outcome = evaluateWarmScan(scan(ROMS, { temperatures }), baseline);
+  assert.equal(outcome.candidate.marginC, 0.75);
+  assert.equal(outcome.accepted, null);
+
+  const lastTemperatures = { ...baseline, [ROMS[7]]: baseline[ROMS[7]] + 0.5 };
+  outcome = evaluateWarmScan(
+    scan(ROMS, { temperatures: lastTemperatures }),
+    baseline,
+    ROMS.slice(0, 7),
+  );
+  assert.equal(outcome.candidate.rom, ROMS[7]);
+  assert.equal(outcome.candidate.marginC, 0.5);
+  assert.equal(outcome.accepted, null);
+
+  lastTemperatures[ROMS[7]] = baseline[ROMS[7]] + 3;
+  outcome = evaluateWarmScan(
+    scan(ROMS, { temperatures: lastTemperatures }),
+    baseline,
+    ROMS.slice(0, 7),
+  );
+  assert.equal(outcome.candidate.marginC, 3);
+  assert.equal(outcome.accepted.rom, ROMS[7]);
+
+  assert.throws(
+    () => evaluateWarmScan(scan(ROMS.slice(0, 7)), baseline),
+    (error) => error.code === "probe-set-mismatch",
   );
 });
 
@@ -311,6 +469,22 @@ test("the empty-bus gate remains retryable and keeps the transaction visible", a
   assert.equal(controller.snapshot.transactionOpen, false);
 });
 
+test("inspection treats a firmware-reported commissioning lock as unsafe", async () => {
+  const client = new FakeClient({
+    infos: [deviceInfo({ commissioning: true })],
+    configurations: [configuration()],
+  });
+  const controller = new ConnectCommissioningController(client);
+
+  await controller.inspect();
+
+  assert.equal(controller.snapshot.phase, CommissioningPhase.RECOVERY_REQUIRED);
+  assert.equal(controller.snapshot.transactionOpen, true);
+  await controller.abort();
+  assert.equal(controller.snapshot.phase, CommissioningPhase.ABORTED);
+  assert.equal(controller.snapshot.transactionOpen, false);
+});
+
 test("connect-one-at-a-time rejects disappeared probes without changing the draft", async () => {
   const client = new FakeClient({
     infos: [deviceInfo()],
@@ -350,6 +524,179 @@ test("connect-one-at-a-time requires valid temperatures and exactly one addition
   );
   await assert.rejects(controller.identifyNextProbe(), /exactly one new probe/);
   assert.deepEqual(controller.snapshot.mappedRoms, []);
+});
+
+test("warm commissioning learns a strict five-scan baseline before identification", async () => {
+  const baselineScans = warmBaselineScans();
+  const client = new FakeClient({
+    infos: [deviceInfo()],
+    configurations: [configuration()],
+    scans: baselineScans,
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+
+  await assert.rejects(
+    controller.start({ method: "unknown" }),
+    (error) => error.code === "invalid-commissioning-method",
+  );
+  assert.equal(controller.snapshot.phase, CommissioningPhase.READY);
+  assert.equal(client.calls.some(([method]) => method === "begin"), false);
+
+  await controller.start({ method: CommissioningMethod.WARM });
+  assert.equal(controller.snapshot.method, CommissioningMethod.WARM);
+  assert.equal(
+    controller.snapshot.phase,
+    CommissioningPhase.AWAITING_WARM_BASELINE,
+  );
+
+  await controller.captureWarmBaseline();
+  assert.equal(controller.snapshot.phase, CommissioningPhase.IDENTIFYING_WARM);
+  assert.equal(Object.keys(controller.snapshot.warmBaseline).length, 8);
+  assert.equal(
+    client.calls.filter(([method]) => method === "scan").length,
+    WARM_BASELINE_SCAN_COUNT,
+  );
+});
+
+test("warm commissioning requires the same eligible winner in two fresh scans", async () => {
+  const baselineScans = warmBaselineScans();
+  const baseline = buildWarmBaseline(baselineScans);
+  const warmed = (rom, riseC) =>
+    scan(ROMS, { temperatures: { ...baseline, [rom]: baseline[rom] + riseC } });
+  const client = new FakeClient({
+    infos: [deviceInfo()],
+    configurations: [configuration()],
+    scans: [
+      ...baselineScans,
+      warmed(ROMS[0], 4),
+      warmed(ROMS[1], 4),
+      warmed(ROMS[0], 4),
+      warmed(ROMS[0], 3.5),
+    ],
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+  await controller.start({ method: CommissioningMethod.WARM });
+  await controller.captureWarmBaseline();
+
+  const ambiguous = await controller.identifyNextWarmedProbe();
+  assert.equal(ambiguous.accepted, null);
+  assert.deepEqual(
+    ambiguous.candidates.map(({ rom }) => rom),
+    [ROMS[0], ROMS[1]],
+  );
+  assert.deepEqual(controller.snapshot.mappedRoms, []);
+  assert.equal(controller.snapshot.phase, CommissioningPhase.IDENTIFYING_WARM);
+
+  const accepted = await controller.identifyNextWarmedProbe();
+  assert.equal(accepted.position, 1);
+  assert.equal(accepted.accepted.rom, ROMS[0]);
+  assert.deepEqual(controller.snapshot.mappedRoms, [ROMS[0]]);
+  assert.equal(controller.snapshot.nextPosition, 2);
+});
+
+test("warm commissioning never maps from a partial confirmation or invalid scan", async () => {
+  const baselineScans = warmBaselineScans();
+  const baseline = buildWarmBaseline(baselineScans);
+  const warming = scan(ROMS, {
+    temperatures: { ...baseline, [ROMS[0]]: baseline[ROMS[0]] + 4 },
+  });
+  const client = new FakeClient({
+    infos: [deviceInfo()],
+    configurations: [configuration()],
+    scans: [
+      ...baselineScans,
+      warming,
+      scan(ROMS, { missingTemperature: [ROMS[7]] }),
+    ],
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+  await controller.start({ method: CommissioningMethod.WARM });
+  await controller.captureWarmBaseline();
+
+  await assert.rejects(
+    controller.identifyNextWarmedProbe(),
+    (error) => error.code === "missing-temperature",
+  );
+  assert.deepEqual(controller.snapshot.mappedRoms, []);
+  assert.equal(controller.snapshot.phase, CommissioningPhase.IDENTIFYING_WARM);
+  assert.equal(controller.snapshot.transactionOpen, true);
+});
+
+test("warm commissioning preserves P1-P8 order through commit, reboot, and live verification", async () => {
+  const baselineScans = warmBaselineScans();
+  const baseline = buildWarmBaseline(baselineScans);
+  const warmed = (rom, riseC) =>
+    scan([...ROMS].reverse(), {
+      temperatures: { ...baseline, [rom]: baseline[rom] + riseC },
+    });
+  const committed = configuration(ROMS, {
+    generation: 7,
+    crc32: "89ABCDEF",
+    restartRequired: true,
+  });
+  const client = new FakeClient({
+    infos: [deviceInfo()],
+    configurations: [configuration(), committed],
+    scans: [
+      ...baselineScans,
+      ...ROMS.flatMap((rom) => [warmed(rom, 4), warmed(rom, 3.5)]),
+      scan([...ROMS].reverse()),
+    ],
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+  await controller.start({ method: CommissioningMethod.WARM });
+  await controller.captureWarmBaseline();
+
+  for (let index = 0; index < ROMS.length; index += 1) {
+    const result = await controller.identifyNextWarmedProbe();
+    assert.equal(result.position, index + 1);
+    assert.equal(result.accepted.rom, ROMS[index]);
+  }
+  assert.deepEqual(controller.snapshot.mappedRoms, ROMS);
+  assert.equal(controller.snapshot.phase, CommissioningPhase.READY_TO_COMMIT);
+
+  const readback = await controller.commit();
+  assert.equal(readback.generation, 7);
+  assert.deepEqual(
+    client.calls.filter(([method]) => method === "setProbe"),
+    ROMS.map((rom, index) => ["setProbe", index + 1, rom]),
+  );
+
+  await controller.reboot();
+  const active = configuration(ROMS, {
+    generation: 7,
+    crc32: "89ABCDEF",
+    restartRequired: false,
+  });
+  const reconnected = new FakeClient({
+    infos: [
+      deviceInfo({
+        configured: true,
+        activeGeneration: 7,
+        restartRequired: false,
+      }),
+    ],
+    configurations: [active],
+    scans: [scan([...ROMS].reverse(), { mapped: true })],
+  });
+  const exported = await controller.verifyAfterReconnect(reconnected);
+
+  assert.equal(controller.snapshot.phase, CommissioningPhase.COMPLETE);
+  assert.deepEqual(
+    exported.sensors.map(({ rom }) => rom),
+    ROMS,
+  );
+  assert.equal(exported.configuration_generation, 7);
+  assert.equal(exported.configuration_crc32, "89ABCDEF");
+  assert.deepEqual(exported, controller.exportVerifiedMapping());
+  assert.deepEqual(
+    reconnected.calls.map(([method]) => method),
+    ["info", "getConfiguration", "begin", "scan", "abort"],
+  );
 });
 
 test("happy path verifies commit readback, reboot activation, live scan, and export", async () => {
@@ -467,6 +814,134 @@ test("an unknown commit can complete only after boot and live-bus verification",
     reconnected.calls.map(([method]) => method),
     ["info", "getConfiguration", "begin", "scan", "abort"],
   );
+});
+
+test("a complete saved map can finish verification after a page reload", async () => {
+  const active = configuration(ROMS, {
+    generation: 9,
+    crc32: "13579BDF",
+  });
+  const info = deviceInfo({ configured: true, activeGeneration: 9 });
+  const client = new FakeClient({
+    infos: [info, info],
+    configurations: [active, active],
+    scans: [scan([...ROMS].reverse(), { mapped: true })],
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+
+  const pending = {
+    ...buildMappingDocument(ROMS),
+    portal_phase: CommissioningPhase.RECOVERY_REQUIRED,
+    commit_outcome: "unknown",
+  };
+  const document = await controller.verifyPendingAfterInspect(pending);
+
+  assert.equal(controller.snapshot.phase, CommissioningPhase.COMPLETE);
+  assert.equal(controller.snapshot.transactionOpen, false);
+  assert.deepEqual(controller.snapshot.mappedRoms, ROMS);
+  assert.equal(document.configuration_generation, 9);
+  assert.equal(document.configuration_crc32, "13579BDF");
+  assert.deepEqual(
+    client.calls.map(([method]) => method),
+    [
+      "info",
+      "getConfiguration",
+      "info",
+      "getConfiguration",
+      "begin",
+      "scan",
+      "abort",
+    ],
+  );
+});
+
+test("saved-map reload recovery rechecks identity before opening a scan transaction", async () => {
+  const active = configuration(ROMS, {
+    generation: 9,
+    crc32: "13579BDF",
+  });
+  const changed = [...ROMS];
+  [changed[0], changed[1]] = [changed[1], changed[0]];
+  const client = new FakeClient({
+    infos: [
+      deviceInfo({ configured: true, activeGeneration: 9 }),
+      deviceInfo({ configured: true, activeGeneration: 10 }),
+    ],
+    configurations: [
+      active,
+      configuration(changed, { generation: 10, crc32: "2468ACE0" }),
+    ],
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+
+  await assert.rejects(
+    controller.verifyPendingAfterInspect({
+      ...buildMappingDocument(ROMS),
+      commit_generation: 9,
+      commit_crc32: "13579BDF",
+    }),
+    (error) => error.code === "pending-mapping-mismatch",
+  );
+  assert.equal(controller.snapshot.phase, CommissioningPhase.READY);
+  assert.equal(client.calls.some(([method]) => method === "begin"), false);
+  assert.equal(client.calls.some(([method]) => method === "scan"), false);
+});
+
+test("saved-map reload recovery requires restart before any diagnostic transaction", async () => {
+  const active = configuration(ROMS, {
+    generation: 9,
+    crc32: "13579BDF",
+    restartRequired: true,
+  });
+  const client = new FakeClient({
+    infos: [
+      deviceInfo({
+        configured: true,
+        activeGeneration: 8,
+        restartRequired: true,
+      }),
+    ],
+    configurations: [active],
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+
+  assert.equal(controller.snapshot.phase, CommissioningPhase.RECOVERY_REQUIRED);
+  await assert.rejects(
+    controller.verifyPendingAfterInspect(buildMappingDocument(ROMS)),
+    (error) => error.code === "invalid-transition",
+  );
+  assert.equal(client.calls.some(([method]) => method === "begin"), false);
+});
+
+test("saved-map verification exposes an uncleared diagnostic transaction", async () => {
+  const active = configuration(ROMS, {
+    generation: 9,
+    crc32: "13579BDF",
+  });
+  const info = deviceInfo({ configured: true, activeGeneration: 9 });
+  const client = new FakeClient({
+    infos: [info, info],
+    configurations: [active, active],
+    scans: [scan(ROMS, { mapped: true })],
+    failures: {
+      abort: [
+        new Error("abort acknowledgement lost"),
+        new Error("abort retry acknowledgement lost"),
+      ],
+    },
+  });
+  const controller = new ConnectCommissioningController(client);
+  await controller.inspect();
+
+  await assert.rejects(
+    controller.verifyPendingAfterInspect(buildMappingDocument(ROMS)),
+    (error) => error.code === "verification-abort-failed",
+  );
+  assert.equal(controller.snapshot.phase, CommissioningPhase.RECOVERY_REQUIRED);
+  assert.equal(controller.snapshot.transactionOpen, true);
 });
 
 test("recovered verification checks the active generation before CFG BEGIN", async () => {

@@ -7,9 +7,11 @@ import {
 } from "./protocol.js";
 import {
   CommitOutcomeUnknownError,
+  CommissioningMethod,
   CommissioningPhase,
   ConnectCommissioningController,
   buildMappingDocument,
+  matchPendingMapping,
   serializeMappingDocument,
 } from "./commissioning.js";
 import {
@@ -33,6 +35,10 @@ const PRECOMMIT_PHASES = new Set([
   CommissioningPhase.SCANNING_EMPTY_BUS,
   CommissioningPhase.IDENTIFYING,
   CommissioningPhase.SCANNING_PROBE,
+  CommissioningPhase.AWAITING_WARM_BASELINE,
+  CommissioningPhase.LEARNING_WARM_BASELINE,
+  CommissioningPhase.IDENTIFYING_WARM,
+  CommissioningPhase.SCANNING_WARM_PROBE,
   CommissioningPhase.READY_TO_COMMIT,
 ]);
 
@@ -375,6 +381,9 @@ function friendlyError(error, position = controller?.snapshot.nextPosition) {
   if (code === "missing-temperature") {
     return "A probe was found but did not return a valid temperature. Check its powered three-wire connection.";
   }
+  if (code === "unstable-warm-baseline") {
+    return "One or more probes are still changing temperature. Stop touching every metal tip, let all eight probes settle, then learn the baseline again.";
+  }
   if (code === "probe-set-mismatch") {
     return "The connected probe set does not match the proposed map. Restore all eight connections before continuing.";
   }
@@ -487,6 +496,7 @@ function savePending(extra = {}) {
   if (!controller) return;
   storageWrite(PENDING_STORAGE_KEY, {
     ...controller.exportDraft(),
+    commissioning_method: controller.snapshot.method,
     portal_phase: controller.snapshot.phase,
     updated_at: new Date().toISOString(),
     ...extra,
@@ -739,6 +749,16 @@ function showInspection(message = "") {
     return;
   }
 
+  const pendingDocument = storageRead(PENDING_STORAGE_KEY);
+  const pendingMatch =
+    configuration?.state === "valid"
+      ? matchPendingMapping(pendingDocument, configuration)
+      : null;
+  if (pendingMatch) {
+    showPendingVerification(pendingMatch);
+    return;
+  }
+
   if (configuration?.state === "valid") {
     setStep("connect");
     setTask({
@@ -748,12 +768,12 @@ function showInspection(message = "") {
       message:
         message ||
         (storageRead(PENDING_STORAGE_KEY)
-          ? "Partial setup work exists in this browser. A replacement still begins with a fresh empty-bus check."
+          ? "Partial setup work exists in this browser. A replacement still begins with a fresh identification transaction."
           : ""),
     });
     configureAction(primaryAction, {
       label: "Replace probe map",
-      handler: () => startSetup(true),
+      handler: () => showMethodChoice(true),
       hidden: false,
     });
     configureAction(secondaryAction, {
@@ -800,10 +820,64 @@ function showInspection(message = "") {
     message,
   });
   configureAction(primaryAction, {
-    label: "Start probe setup",
-    handler: () => startSetup(false),
+    label: "Choose setup method",
+    handler: () => showMethodChoice(false),
     hidden: false,
   });
+}
+
+function showPendingVerification(match) {
+  setStep("verify");
+  setTask({
+    kicker: "Setup recovery",
+    title: "Finish verifying the saved probe map",
+    description:
+      `The active generation ${match.generation} has the same complete P1–P8 order saved by this browser. Run one fresh eight-probe bus check before treating it as verified.`,
+    message:
+      "The saved progress will remain until the active map and every connected probe pass this check.",
+  });
+  setExpected("Required: exact active order · all eight probes present · mapped positions agree");
+  configureAction(primaryAction, {
+    label: "Verify saved map",
+    handler: finishPendingVerification,
+    hidden: false,
+  });
+  renderProbeMap(match.roms, { status: "installed", temperatures: false });
+  updateTransactionUi();
+}
+
+async function finishPendingVerification() {
+  const pendingDocument = storageRead(PENDING_STORAGE_KEY);
+  setMessage(
+    "Checking the active order and live bus. Keep USB and all eight probes connected.",
+  );
+  setVerificationStage(4, 4);
+  try {
+    const document = await controller.verifyPendingAfterInspect(pendingDocument);
+    verifiedDocument = document;
+    finishSuccessfulSetup(document);
+  } catch (error) {
+    if (
+      controller.snapshot.phase === CommissioningPhase.RECOVERY_REQUIRED &&
+      controller.snapshot.transactionOpen
+    ) {
+      setTask({
+        kicker: "Setup recovery",
+        title: "Restart before retrying verification",
+        description:
+          "The live check opened a temporary setup transaction, but the portal could not prove that it was cleared. Restart and inspect the logger before trying again.",
+        message: friendlyError(error),
+        messageKind: "error",
+      });
+      configureAction(primaryAction, {
+        label: "Restart and inspect",
+        handler: restartAndInspect,
+        hidden: false,
+      });
+      updateTransactionUi();
+    }
+    throw error;
+  }
 }
 
 async function clearIncompleteSetup() {
@@ -838,9 +912,37 @@ async function leaveExistingMap() {
   logActivity("Left the active probe map unchanged");
 }
 
-async function startSetup(replaceExisting) {
+function showMethodChoice(replaceExisting) {
+  setStep("prepare");
+  setTask({
+    kicker: "Step 2 · Method",
+    title: "Identify probes without disconnecting them",
+    description:
+      "For an assembled logger, keep all eight probes wired and warm their metal tips one at a time. The bench method is only for a loose harness whose probes can be connected without soldering.",
+  });
+  setExpected("Recommended: assembled probes · no wiring changes");
+  configureAction(primaryAction, {
+    label: "Identify assembled probes",
+    handler: () => startSetup(replaceExisting, CommissioningMethod.WARM),
+    hidden: false,
+  });
+  configureAction(secondaryAction, {
+    label: "Bench: connect one at a time",
+    handler: () => startSetup(replaceExisting, CommissioningMethod.CONNECT),
+    hidden: false,
+  });
+  configureAction(cancelAction, {
+    label: "Back",
+    handler: () => showInspection(),
+    hidden: false,
+  });
+  privacyNote.hidden = true;
+  updateTransactionUi();
+}
+
+async function startSetup(replaceExisting, method) {
   try {
-    await controller.start({ replaceExisting });
+    await controller.start({ replaceExisting, method });
   } catch (error) {
     controller = new ConnectCommissioningController(client);
     try {
@@ -855,8 +957,11 @@ async function startSetup(replaceExisting) {
   storageRemove(PENDING_STORAGE_KEY);
   savePending();
   startKeepalive();
-  logActivity("Opened commissioning transaction; automatic logging paused");
-  showPrepare();
+  logActivity(
+    `Opened ${method} commissioning transaction; automatic logging paused`,
+  );
+  if (method === CommissioningMethod.WARM) showWarmPrepare();
+  else showPrepare();
 }
 
 function showPrepare(message = "") {
@@ -890,6 +995,106 @@ async function checkEmptyBus() {
   savePending();
   logActivity("Confirmed empty 1-Wire bus");
   showIdentify();
+}
+
+function showWarmPrepare(message = "") {
+  setStep("prepare");
+  setTask({
+    kicker: "Step 2 · Prepare assembled probes",
+    title: "Let all eight probes settle",
+    description:
+      "Keep every probe connected. Do this before heating the sauna, stop touching the metal tips, and let each probe hold a steady temperature. The probes do not need to read exactly the same.",
+    message,
+  });
+  setExpected("Expected: 8 connected probes · each stable within 0.5 °C");
+  configureAction(primaryAction, {
+    label: "Learn five-scan baseline",
+    handler: learnWarmBaseline,
+    hidden: false,
+  });
+  configureAction(cancelAction, {
+    label: "Cancel setup",
+    handler: cancelSetup,
+    hidden: false,
+  });
+  privacyNote.hidden = true;
+  renderProbeMap();
+  updateTransactionUi();
+}
+
+async function learnWarmBaseline() {
+  await controller.captureWarmBaseline();
+  updateTemperatures(controller.snapshot.lastScan);
+  savePending();
+  logActivity("Learned stable five-scan baseline for eight assembled probes");
+  showWarmIdentify();
+}
+
+function warmCandidateMessage(result) {
+  if (!result) return "";
+  if (result.accepted) {
+    return `P${result.position} identified · ${formatRom(result.accepted.rom)} · ${formatTemperature(result.accepted.temperatureC)} · rise ${result.accepted.riseC.toFixed(1)} °C`;
+  }
+  const candidate = result.candidates?.at(-1);
+  if (!candidate) {
+    return `P${result.position} was not identified. Keep warming only that tip, then check again.`;
+  }
+  return `Not clear yet · strongest rise ${candidate.riseC.toFixed(1)} °C · lead ${candidate.marginC.toFixed(1)} °C. Keep warming only P${result.position}, then check again.`;
+}
+
+function showWarmIdentify(lastResult = null) {
+  const snapshot = controller.snapshot;
+  const position = snapshot.nextPosition;
+  const height = formatHeight(positionHeight(position));
+  const location =
+    position === 1
+      ? "Top / farthest from the logger"
+      : position === 8
+        ? "Bottom / nearest the logger"
+        : "Next position toward the logger";
+  setStep("identify");
+  setTask({
+    kicker: `Step 3 · Identify assembled probes · ${snapshot.mappedRoms.length} of 8`,
+    title: `Warm the metal tip of P${position}`,
+    description:
+      `${location} · ${height}. Keep every wire connected. Warm only this tip by hand or with a warm, not hot, cloth; then check it. Previously identified probes may remain warm.`,
+    message: warmCandidateMessage(lastResult),
+    messageKind: lastResult?.accepted ? "success" : "info",
+  });
+  setExpected("Required twice: rise ≥ 3.0 °C · clear lead ≥ 1.0 °C");
+  configureAction(primaryAction, {
+    label: `Check warmed P${position}`,
+    handler: identifyNextWarm,
+    hidden: false,
+  });
+  configureAction(cancelAction, {
+    label: "Cancel setup",
+    handler: cancelSetup,
+    hidden: false,
+  });
+  renderProbeMap(snapshot.mappedRoms, {
+    currentPosition: position,
+    status: "identified",
+  });
+  updateTransactionUi();
+}
+
+async function identifyNextWarm() {
+  const result = await controller.identifyNextWarmedProbe();
+  updateTemperatures(controller.snapshot.lastScan);
+  savePending();
+  if (!result.accepted) {
+    logActivity(`Warm check for P${result.position} was inconclusive`);
+    showWarmIdentify(result);
+    return;
+  }
+  logActivity(`Identified warmed P${result.position} as ${result.accepted.rom}`);
+  const accepted = { position: result.position, ...result.accepted };
+  if (controller.snapshot.phase === CommissioningPhase.READY_TO_COMMIT) {
+    showReview(accepted);
+  } else {
+    showWarmIdentify(result);
+  }
 }
 
 function showIdentify(accepted = null) {
@@ -978,16 +1183,21 @@ function showReview(lastAccepted = null) {
 }
 
 async function restartIdentification() {
+  const method = controller.snapshot.method;
   await controller.abort();
   stopKeepalive();
   controller = new ConnectCommissioningController(client);
   await controller.inspect();
-  await controller.start({ replaceExisting: controller.snapshot.existingConfiguration?.state === "valid" });
+  await controller.start({
+    replaceExisting: controller.snapshot.existingConfiguration?.state === "valid",
+    method,
+  });
   displayedTemperatures = new Map();
   savePending();
   startKeepalive();
-  logActivity("Restarted position identification from an empty bus");
-  showPrepare();
+  logActivity(`Restarted ${method} position identification`);
+  if (method === CommissioningMethod.WARM) showWarmPrepare();
+  else showPrepare();
 }
 
 async function cancelSetup() {
@@ -1442,7 +1652,7 @@ async function recoverPrecommit() {
   controller = new ConnectCommissioningController(client);
   await controller.inspect();
   showInspection(
-    "The interrupted staging transaction was cleared. Start again from the empty-bus check; local partial work was not written to the logger.",
+    "The interrupted staging transaction was cleared. Choose a setup method and start identification again; local partial work was not written to the logger.",
   );
 }
 

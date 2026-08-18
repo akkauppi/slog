@@ -98,6 +98,21 @@ test("the portal has no third-party runtime assets", async () => {
   assert.doesNotMatch(html, /type=["']file["']/i);
 });
 
+test("assembled-probe commissioning is the primary portal workflow", async () => {
+  const source = await readFile(path.join(portalRoot, "js/app.js"), "utf8");
+  assert.match(
+    source,
+    /label: "Identify assembled probes"[\s\S]*?startSetup\(replaceExisting, CommissioningMethod\.WARM\)/,
+  );
+  assert.match(
+    source,
+    /label: "Bench: connect one at a time"[\s\S]*?startSetup\(replaceExisting, CommissioningMethod\.CONNECT\)/,
+  );
+  assert.match(source, /Keep every probe connected/);
+  assert.match(source, /Learn five-scan baseline/);
+  assert.match(source, /Check warmed P\$\{position\}/);
+});
+
 test("persisted flash recovery stays locked to the prepared package", async () => {
   const source = await readFile(
     path.join(portalRoot, "js/flash-ui.js"),

@@ -5,11 +5,20 @@ import {
   oneAddedRom,
   requireActiveGeneration,
   requireCompatibleDevice,
+  selectWarmedProbe,
+  strongestWarming,
   validateMapping,
 } from "./protocol.js";
 
 export const MAPPING_SCHEMA_VERSION = 1;
 export const DEFAULT_MAPPING_DEVICE = "sauna-column-1";
+export const WARM_BASELINE_SCAN_COUNT = 5;
+export const WARM_BASELINE_MAX_SPAN_C = 0.5;
+
+export const CommissioningMethod = Object.freeze({
+  CONNECT: "connect",
+  WARM: "warm",
+});
 
 export const CommissioningPhase = Object.freeze({
   IDLE: "idle",
@@ -20,6 +29,10 @@ export const CommissioningPhase = Object.freeze({
   SCANNING_EMPTY_BUS: "scanning-empty-bus",
   IDENTIFYING: "identifying",
   SCANNING_PROBE: "scanning-probe",
+  AWAITING_WARM_BASELINE: "awaiting-warm-baseline",
+  LEARNING_WARM_BASELINE: "learning-warm-baseline",
+  IDENTIFYING_WARM: "identifying-warm",
+  SCANNING_WARM_PROBE: "scanning-warm-probe",
   READY_TO_COMMIT: "ready-to-commit",
   COMMITTING: "committing",
   READY_TO_REBOOT: "ready-to-reboot",
@@ -39,6 +52,10 @@ const TRANSACTION_PHASES = new Set([
   CommissioningPhase.SCANNING_EMPTY_BUS,
   CommissioningPhase.IDENTIFYING,
   CommissioningPhase.SCANNING_PROBE,
+  CommissioningPhase.AWAITING_WARM_BASELINE,
+  CommissioningPhase.LEARNING_WARM_BASELINE,
+  CommissioningPhase.IDENTIFYING_WARM,
+  CommissioningPhase.SCANNING_WARM_PROBE,
   CommissioningPhase.READY_TO_COMMIT,
 ]);
 
@@ -163,6 +180,114 @@ function scanRoms(scan, { requireTemperatures = true } = {}) {
     fail("invalid-scan", "The scan contains a duplicate probe ROM address.");
   }
   return roms;
+}
+
+function completeTemperatureMap(scan, expectedRoms = null) {
+  const actualRoms = scanRoms(scan);
+  if (scan.busCount !== EXPECTED_SENSORS || actualRoms.length !== EXPECTED_SENSORS) {
+    fail(
+      "probe-set-mismatch",
+      `Expected ${EXPECTED_SENSORS} valid probes on the 1-Wire bus, found ${actualRoms.length} valid of ${scan.busCount}.`,
+    );
+  }
+
+  if (expectedRoms !== null) {
+    const expected = validateMapping(expectedRoms);
+    if (
+      actualRoms.some((rom) => !expected.includes(rom)) ||
+      expected.some((rom) => !actualRoms.includes(rom))
+    ) {
+      fail(
+        "probe-set-mismatch",
+        "The discovered probe set changed during warm identification.",
+      );
+    }
+  }
+
+  return Object.freeze(
+    Object.fromEntries(
+      scan.probes.map((probe) => [normalizeRom(probe.rom), probe.temperatureC]),
+    ),
+  );
+}
+
+function canonicalWarmBaseline(baselines) {
+  if (!baselines || typeof baselines !== "object" || Array.isArray(baselines)) {
+    fail("invalid-warm-baseline", "The warm-identification baseline is invalid.");
+  }
+
+  const entries = Object.entries(baselines).map(([value, temperatureC]) => {
+    const rom = normalizeRom(value);
+    if (typeof temperatureC !== "number" || !Number.isFinite(temperatureC)) {
+      fail(
+        "invalid-warm-baseline",
+        `Probe ${rom} has no valid baseline temperature.`,
+      );
+    }
+    return [rom, temperatureC];
+  });
+  const roms = validateMapping(entries.map(([rom]) => rom));
+  if (new Set(roms).size !== entries.length) {
+    fail("invalid-warm-baseline", "The warm baseline contains duplicate probes.");
+  }
+  return Object.freeze(Object.fromEntries(entries));
+}
+
+/**
+ * Build an ambient baseline from exactly five complete, stable bus scans.
+ *
+ * The median is calculated independently for each ROM. Discovery order is
+ * deliberately irrelevant; every scan must contain the exact same eight ROMs
+ * and every probe must stay within the stability span.
+ */
+export function buildWarmBaseline(scans) {
+  if (!Array.isArray(scans) || scans.length !== WARM_BASELINE_SCAN_COUNT) {
+    fail(
+      "invalid-baseline-scan-count",
+      `Warm identification requires exactly ${WARM_BASELINE_SCAN_COUNT} baseline scans.`,
+    );
+  }
+
+  const first = completeTemperatureMap(scans[0]);
+  const expectedRoms = Object.keys(first);
+  const history = Object.fromEntries(expectedRoms.map((rom) => [rom, []]));
+  for (const scan of scans) {
+    const temperatures = completeTemperatureMap(scan, expectedRoms);
+    for (const rom of expectedRoms) history[rom].push(temperatures[rom]);
+  }
+
+  const baselines = {};
+  for (const rom of expectedRoms) {
+    const values = [...history[rom]].sort((left, right) => left - right);
+    const spanC = values.at(-1) - values[0];
+    if (spanC > WARM_BASELINE_MAX_SPAN_C) {
+      fail(
+        "unstable-warm-baseline",
+        `Probe ${rom} changed by ${spanC.toFixed(2)} C while learning the ambient baseline.`,
+      );
+    }
+    baselines[rom] = values[Math.floor(values.length / 2)];
+  }
+  return Object.freeze(baselines);
+}
+
+/** Validate a live warm scan and report both the strongest and accepted probe. */
+export function evaluateWarmScan(scan, baselines, alreadyMapped = []) {
+  const baseline = canonicalWarmBaseline(baselines);
+  const mapped = canonicalPartialMapping(alreadyMapped);
+  for (const rom of mapped) {
+    if (!Object.hasOwn(baseline, rom)) {
+      fail(
+        "probe-set-mismatch",
+        `Mapped probe ${rom} is not present in the warm baseline.`,
+      );
+    }
+  }
+
+  const temperatures = completeTemperatureMap(scan, Object.keys(baseline));
+  const candidate = strongestWarming(temperatures, baseline, mapped);
+  const accepted = selectWarmedProbe(temperatures, baseline, mapped);
+  return Object.freeze({ temperatures, candidate, accepted });
 }
 
 function requireExactScan(scan, expectedRoms, { checkMappedPositions = false } = {}) {
@@ -324,6 +449,55 @@ export function serializeMappingDocument(document) {
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
+/**
+ * Return the complete ordered map from a saved browser draft only when it is
+ * identical to the boot-selected configuration. Optional commit identity
+ * fields are treated as additional constraints, never as substitutes for the
+ * ordered ROM comparison.
+ */
+export function matchPendingMapping(document, configuration) {
+  try {
+    const parsed = parseMappingDocument(document);
+    const expected = validateMapping(parsed.roms);
+    const actual = configurationRoms(configuration);
+    if (actual.some((rom, index) => rom !== expected[index])) return null;
+
+    const activeIdentity = normalizedConfigurationIdentity(configuration);
+    const identities = [];
+    if (parsed.configuration) identities.push(parsed.configuration);
+
+    const hasCommitGeneration = document.commit_generation !== undefined;
+    const hasCommitCrc = document.commit_crc32 !== undefined;
+    if (hasCommitGeneration !== hasCommitCrc) return null;
+    if (hasCommitGeneration) {
+      const generation = requireInteger(
+        document.commit_generation,
+        "commit_generation",
+        1,
+      );
+      const crc32 = String(document.commit_crc32).toUpperCase();
+      if (!CRC32_TEXT.test(crc32)) return null;
+      identities.push({ generation, crc32 });
+    }
+
+    if (
+      identities.some(
+        ({ generation, crc32 }) =>
+          generation !== activeIdentity.generation || crc32 !== activeIdentity.crc32,
+      )
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      roms: Object.freeze([...expected]),
+      generation: activeIdentity.generation,
+      crc32: activeIdentity.crc32,
+    });
+  } catch {
+    return null;
+  }
+}
+
 /** Verify the complete CFG COMMIT acknowledgement and CFG GET readback. */
 export function verifyCommittedReadback(configuration, expectedRoms, commitResult) {
   const expected = validateMapping(expectedRoms);
@@ -418,8 +592,18 @@ function errorSummary(error) {
   };
 }
 
+function requireCommissioningMethod(method) {
+  if (!Object.values(CommissioningMethod).includes(method)) {
+    fail(
+      "invalid-commissioning-method",
+      `Unsupported probe-identification method ${String(method)}.`,
+    );
+  }
+  return method;
+}
+
 /**
- * DOM-free connect-one-at-a-time commissioning controller.
+ * DOM-free connect-or-warm commissioning controller.
  *
  * The injected client mirrors the Python client: info(), getConfiguration(),
  * begin(), scan(), setProbe(), commit(), abort(), keepalive(), and reboot().
@@ -431,9 +615,11 @@ export class ConnectCommissioningController {
     }
     this.client = client;
     this.phase = CommissioningPhase.IDLE;
+    this.method = CommissioningMethod.CONNECT;
     this.deviceInfo = null;
     this.existingConfiguration = null;
     this.mappedRoms = [];
+    this.warmBaseline = null;
     this.lastScan = null;
     this.committedConfiguration = null;
     this.lastError = null;
@@ -451,9 +637,11 @@ export class ConnectCommissioningController {
   get snapshot() {
     return {
       phase: this.phase,
+      method: this.method,
       deviceInfo: copyData(this.deviceInfo),
       existingConfiguration: copyData(this.existingConfiguration),
       mappedRoms: [...this.mappedRoms],
+      warmBaseline: copyData(this.warmBaseline),
       nextPosition:
         this.mappedRoms.length < EXPECTED_SENSORS
           ? this.mappedRoms.length + 1
@@ -516,7 +704,8 @@ export class ConnectCommissioningController {
       }
       this.deviceInfo = copyData(info);
       this.existingConfiguration = copyData(configuration);
-      this.phase = info.restartRequired
+      this.transactionOpen = info.commissioning;
+      this.phase = info.restartRequired || info.commissioning
         ? CommissioningPhase.RECOVERY_REQUIRED
         : CommissioningPhase.READY;
       return this.snapshot;
@@ -527,8 +716,9 @@ export class ConnectCommissioningController {
     }
   }
 
-  async start({ replaceExisting = false } = {}) {
+  async start({ replaceExisting = false, method = CommissioningMethod.CONNECT } = {}) {
     requirePhase(this.phase, CommissioningPhase.READY, "start commissioning");
+    requireCommissioningMethod(method);
     if (this.existingConfiguration?.state === "valid" && !replaceExisting) {
       fail(
         "replacement-not-confirmed",
@@ -545,11 +735,16 @@ export class ConnectCommissioningController {
       }
       await this.client.begin(GEOMETRY_ID);
       this.transactionOpen = true;
+      this.method = method;
       this.mappedRoms = [];
+      this.warmBaseline = null;
       this.lastScan = null;
       this.committedConfiguration = null;
       this.commitMayHaveReachedDevice = false;
-      this.phase = CommissioningPhase.AWAITING_EMPTY_BUS;
+      this.phase =
+        method === CommissioningMethod.WARM
+          ? CommissioningPhase.AWAITING_WARM_BASELINE
+          : CommissioningPhase.AWAITING_EMPTY_BUS;
       return this.snapshot;
     } catch (error) {
       this._rememberError(error);
@@ -619,6 +814,89 @@ export class ConnectCommissioningController {
     } catch (error) {
       this._rememberError(error);
       this.phase = CommissioningPhase.IDENTIFYING;
+      throw error;
+    }
+  }
+
+  async captureWarmBaseline() {
+    requirePhase(
+      this.phase,
+      CommissioningPhase.AWAITING_WARM_BASELINE,
+      "learn the warm-identification baseline",
+    );
+    this.phase = CommissioningPhase.LEARNING_WARM_BASELINE;
+    this._clearError();
+    try {
+      const scans = [];
+      let expectedRoms = null;
+      for (let index = 0; index < WARM_BASELINE_SCAN_COUNT; index += 1) {
+        const scan = await this.client.scan();
+        const temperatures = completeTemperatureMap(scan, expectedRoms);
+        expectedRoms ??= Object.keys(temperatures);
+        scans.push(scan);
+      }
+      this.warmBaseline = buildWarmBaseline(scans);
+      this.lastScan = copyData(scans.at(-1));
+      this.phase = CommissioningPhase.IDENTIFYING_WARM;
+      return this.snapshot;
+    } catch (error) {
+      this.warmBaseline = null;
+      this._rememberError(error);
+      this.phase = CommissioningPhase.AWAITING_WARM_BASELINE;
+      throw error;
+    }
+  }
+
+  async identifyNextWarmedProbe() {
+    requirePhase(
+      this.phase,
+      CommissioningPhase.IDENTIFYING_WARM,
+      "identify the next warmed probe",
+    );
+    if (!this.warmBaseline) {
+      fail(
+        "missing-warm-baseline",
+        "Learn a complete ambient baseline before warming a probe.",
+      );
+    }
+    if (this.mappedRoms.length >= EXPECTED_SENSORS) {
+      fail("mapping-complete", "All probe positions have already been identified.");
+    }
+
+    this.phase = CommissioningPhase.SCANNING_WARM_PROBE;
+    this._clearError();
+    try {
+      const scans = [await this.client.scan(), await this.client.scan()];
+      const outcomes = scans.map((scan) =>
+        evaluateWarmScan(scan, this.warmBaseline, this.mappedRoms),
+      );
+      this.lastScan = copyData(scans.at(-1));
+
+      const [first, second] = outcomes.map(({ accepted }) => accepted);
+      if (!first || !second || first.rom !== second.rom) {
+        this.phase = CommissioningPhase.IDENTIFYING_WARM;
+        return {
+          position: this.mappedRoms.length + 1,
+          accepted: null,
+          candidates: outcomes.map(({ candidate }) => copyData(candidate)),
+          draft: this.exportDraft(),
+        };
+      }
+
+      this.mappedRoms.push(second.rom);
+      this.phase =
+        this.mappedRoms.length === EXPECTED_SENSORS
+          ? CommissioningPhase.READY_TO_COMMIT
+          : CommissioningPhase.IDENTIFYING_WARM;
+      return {
+        position: this.mappedRoms.length,
+        accepted: copyData(second),
+        candidates: outcomes.map(({ candidate }) => copyData(candidate)),
+        draft: this.exportDraft(),
+      };
+    } catch (error) {
+      this._rememberError(error);
+      this.phase = CommissioningPhase.IDENTIFYING_WARM;
       throw error;
     }
   }
@@ -926,6 +1204,98 @@ export class ConnectCommissioningController {
       }
       this._rememberError(error);
       this.phase = CommissioningPhase.RECOVERY_REQUIRED;
+      throw error;
+    }
+  }
+
+  /**
+   * Finish verification from a complete browser draft after a page reload.
+   * The active configuration and optional saved commit identity are checked
+   * again immediately before opening the diagnostic scan transaction.
+   */
+  async verifyPendingAfterInspect(document) {
+    requirePhase(
+      this.phase,
+      CommissioningPhase.READY,
+      "verify a saved probe mapping",
+    );
+    this.phase = CommissioningPhase.VERIFYING;
+    this._clearError();
+
+    let diagnosticTransaction = false;
+    try {
+      const info = await this.client.info();
+      requireCompatibleDevice(info);
+      if (info.restartRequired) {
+        fail(
+          "recovery-restart-required",
+          "The logger must restart before the saved configuration can be verified.",
+        );
+      }
+      if (info.commissioning) {
+        fail(
+          "recovery-transaction-active",
+          "The logger has another commissioning transaction open.",
+        );
+      }
+
+      const configuration = await this.client.getConfiguration();
+      if (configuration.restartRequired) {
+        fail(
+          "recovery-restart-required",
+          "The saved configuration must be activated by restart before it can be verified.",
+        );
+      }
+      const match = matchPendingMapping(document, configuration);
+      if (!match) {
+        fail(
+          "pending-mapping-mismatch",
+          "The active logger configuration does not exactly match the saved pending mapping.",
+        );
+      }
+      requireActiveGeneration(info, match.generation);
+
+      await this.client.begin(GEOMETRY_ID);
+      diagnosticTransaction = true;
+      this.transactionOpen = true;
+      const scan = await this.client.scan();
+      const verified = verifyPostRebootState(
+        info,
+        configuration,
+        scan,
+        configuration,
+        match.roms,
+      );
+      const abortResult = await this.client.abort();
+      requireClearedAbort(abortResult);
+      diagnosticTransaction = false;
+      this.transactionOpen = false;
+
+      this.deviceInfo = copyData(info);
+      this.existingConfiguration = copyData(configuration);
+      this.mappedRoms = [...match.roms];
+      this.committedConfiguration = copyData(configuration);
+      this.commitMayHaveReachedDevice = false;
+      this.phase = CommissioningPhase.COMPLETE;
+      return verified;
+    } catch (error) {
+      if (diagnosticTransaction) {
+        try {
+          const abortResult = await this.client.abort();
+          requireClearedAbort(abortResult);
+          this.transactionOpen = false;
+        } catch (abortError) {
+          this._rememberError(abortError);
+          this.phase = CommissioningPhase.RECOVERY_REQUIRED;
+          throw new CommissioningWorkflowError(
+            "verification-abort-failed",
+            "Saved-map verification failed and its diagnostic transaction could not be cleared.",
+            { cause: abortError, recoverable: false },
+          );
+        }
+      }
+      this._rememberError(error);
+      this.phase = CommissioningPhase.READY;
       throw error;
     }
   }
