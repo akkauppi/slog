@@ -7,12 +7,13 @@ direction remains in [`community-project-plan.md`](community-project-plan.md).
 
 ## Repository snapshot
 
-- Repository: `akkauppi/saunan`
+- Repository: `akkauppi/slog`
+- Renamed from `akkauppi/saunan` when the SLOG brand became the public identity.
 - Default branch: `main`
-- Pull requests #1 through #4 are merged.
+- Pull requests #1 through #5 are merged.
 - Their short-lived feature branches have been removed locally and remotely.
 - GitHub Pages uses the repository's `Portal` Actions workflow and publishes
-  **[akkauppi.github.io/saunan](https://akkauppi.github.io/saunan/)**.
+  **[akkauppi.github.io/slog](https://akkauppi.github.io/slog/)**.
 
 ## Delivered foundation
 
