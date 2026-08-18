@@ -9,6 +9,8 @@
   --accent: #a33a16;
   --accent-hover: #7f2d11;
   --measure: 68ch;
+  --diagnostic-console-bar: 2.875rem;
+  --diagnostic-console-height: min(26rem, 55dvh);
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
     "Helvetica Neue", Arial, sans-serif;
   font-synthesis: none;
@@ -31,10 +33,15 @@ html {
 body {
   min-height: 100vh;
   margin: 0;
+  padding-bottom: calc(var(--diagnostic-console-bar) + env(safe-area-inset-bottom));
   color: var(--ink);
   background: var(--background);
   font-size: 16px;
   line-height: 1.5;
+}
+
+body.diagnostic-console-open {
+  padding-bottom: calc(var(--diagnostic-console-height) + env(safe-area-inset-bottom));
 }
 
 button,
@@ -1083,8 +1090,101 @@ caption {
   border-top: 1px solid var(--line);
 }
 
-.protocol-log {
+.diagnostic-console {
+  position: fixed;
+  z-index: 30;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: calc(var(--diagnostic-console-bar) + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--ink);
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.diagnostic-console[data-expanded="true"] {
+  height: calc(var(--diagnostic-console-height) + env(safe-area-inset-bottom));
+}
+
+.diagnostic-console__bar,
+.diagnostic-console__panel {
+  width: min(100% - 3rem, 1120px);
+  margin-inline: auto;
+}
+
+.diagnostic-console__bar {
+  height: var(--diagnostic-console-bar);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 1rem;
+}
+
+.diagnostic-console__toggle {
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0 0.8rem 0 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
   font-size: 0.76rem;
+  font-weight: 680;
+}
+
+.diagnostic-console__toggle:hover {
+  color: var(--accent-hover);
+}
+
+.diagnostic-console__mark {
+  width: 0.52rem;
+  height: 0.52rem;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+}
+
+.diagnostic-console__count,
+.diagnostic-console__toggle-label,
+.diagnostic-console kbd {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 550;
+}
+
+.diagnostic-console kbd {
+  min-width: 1.7rem;
+  padding: 0.05rem 0.25rem;
+  border: 1px solid var(--line);
+  background: var(--background);
+  font-family: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  text-align: center;
+}
+
+.diagnostic-console__preview {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostic-console__panel {
+  height: calc(100% - var(--diagnostic-console-bar) - env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  padding-block: 0.85rem 1rem;
+  border-top: 1px solid var(--line-strong);
+  font-size: 0.76rem;
+}
+
+.diagnostic-console__panel:focus {
+  outline: none;
 }
 
 .transcript-heading {
@@ -1097,6 +1197,17 @@ caption {
 
 .transcript-heading h3 {
   margin: 0;
+}
+
+.transcript-heading h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+}
+
+.transcript-heading .section-label {
+  margin-bottom: 0.25rem;
+  font-size: 0.65rem;
 }
 
 .transcript-actions {
@@ -1128,17 +1239,20 @@ caption {
   font-size: 0.76rem;
 }
 
-.protocol-log ol {
-  max-height: 20rem;
+.diagnostic-console ol {
+  min-height: 0;
   margin: 0;
   padding: 0.75rem;
   overflow: auto;
   border-block: 1px solid var(--line);
   color: #3f3f3b;
+  background: #fafaf8;
+  font-family: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   list-style: none;
+  scrollbar-gutter: stable;
 }
 
-.protocol-log li + li {
+.diagnostic-console li + li {
   margin-top: 0.35rem;
 }
 
@@ -1276,11 +1390,39 @@ dialog h2 {
 }
 
 @media (max-width: 639px) {
+  :root {
+    --diagnostic-console-height: min(30rem, 70dvh);
+  }
+
   .site-header__inner,
   .page,
   .site-footer,
-  .update-notice {
+  .update-notice,
+  .diagnostic-console__bar,
+  .diagnostic-console__panel {
     width: min(100% - 2rem, 1120px);
+  }
+
+  .diagnostic-console__bar {
+    gap: 0.55rem;
+  }
+
+  .diagnostic-console__toggle {
+    gap: 0.4rem;
+    padding-right: 0.55rem;
+  }
+
+  .diagnostic-console__count,
+  .diagnostic-console kbd {
+    display: none;
+  }
+
+  .diagnostic-console__preview {
+    font-size: 0.68rem;
+  }
+
+  .diagnostic-console__panel {
+    padding-top: 0.7rem;
   }
 
   .site-header__inner {
@@ -1383,6 +1525,11 @@ dialog h2 {
 
   .transcript-actions {
     justify-content: flex-start;
+  }
+
+  .transcript-actions .button {
+    min-height: 32px;
+    padding-inline: 0.55rem;
   }
 
   .transcript-entry {

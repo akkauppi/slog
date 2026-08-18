@@ -284,10 +284,9 @@
           <details class="technical" id="technical-details">
             <summary>Advanced mode</summary>
             <p class="technical__intro">
-              Read-only local diagnostics. Manual commands and free-form terminal
-              input are not provided in this release; managed workflows keep
-              exclusive control. Firmware frames are summarized, and binary payload
-              bytes are never shown.
+              Device identity and configuration details for troubleshooting.
+              The read-only serial transcript remains available in the diagnostics
+              console at the bottom of every portal section.
             </p>
             <dl class="technical__grid">
               <div><dt>Protocol</dt><dd id="detail-protocol">—</dd></div>
@@ -297,28 +296,6 @@
               <div><dt>Configuration CRC</dt><dd id="detail-crc">—</dd></div>
               <div><dt>USB device</dt><dd id="detail-usb">—</dd></div>
             </dl>
-            <div class="protocol-log">
-              <div class="transcript-heading">
-                <h3>Timestamped transcript</h3>
-                <div class="transcript-actions">
-                  <button class="button button--quiet" id="copy-transcript" type="button">
-                    Copy transcript
-                  </button>
-                  <button class="button button--quiet" id="download-diagnostics" type="button">
-                    Download diagnostics
-                  </button>
-                  <button class="button button--quiet" id="clear-transcript" type="button">
-                    Clear
-                  </button>
-                </div>
-              </div>
-              <p class="diagnostic-privacy">
-                This transcript can contain probe ROM addresses and device
-                identifiers. Review it before sharing. Nothing is uploaded.
-              </p>
-              <p id="diagnostic-action-status" role="status" aria-live="polite"></p>
-              <ol id="protocol-log" aria-label="Read-only diagnostic transcript"></ol>
-            </div>
           </details>
         </div>
       </div>
@@ -477,6 +454,71 @@
       <p>Runs locally in your browser. Firmware files are bundled; device data is not uploaded.</p>
       <p>Desktop browser with Web Serial · HTTPS or localhost</p>
     </footer>
+
+    <aside
+      class="diagnostic-console"
+      id="diagnostic-console"
+      data-expanded="false"
+      aria-label="Diagnostics console"
+    >
+      <div class="diagnostic-console__bar">
+        <button
+          class="diagnostic-console__toggle"
+          id="diagnostic-console-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="diagnostic-console-panel"
+          aria-label="Expand diagnostics console (F2)"
+        >
+          <span class="diagnostic-console__mark" aria-hidden="true"></span>
+          <span class="diagnostic-console__name">Diagnostics</span>
+          <span class="diagnostic-console__count" id="diagnostic-console-count">0 entries</span>
+          <kbd aria-hidden="true">F2</kbd>
+          <span class="diagnostic-console__toggle-label" id="diagnostic-console-toggle-label">Expand</span>
+        </button>
+        <p class="diagnostic-console__preview" id="diagnostic-console-preview" aria-hidden="true">
+          No diagnostics recorded
+        </p>
+      </div>
+
+      <section
+        class="diagnostic-console__panel"
+        id="diagnostic-console-panel"
+        aria-labelledby="diagnostic-console-title"
+        tabindex="-1"
+        hidden
+      >
+        <div class="transcript-heading">
+          <div>
+            <p class="section-label">Managed USB activity</p>
+            <h2 id="diagnostic-console-title">Read-only transcript</h2>
+          </div>
+          <div class="transcript-actions">
+            <button class="button button--quiet" id="copy-transcript" type="button">
+              Copy transcript
+            </button>
+            <button class="button button--quiet" id="download-diagnostics" type="button">
+              Download diagnostics
+            </button>
+            <button class="button button--quiet" id="clear-transcript" type="button">
+              Clear
+            </button>
+          </div>
+        </div>
+        <p class="diagnostic-privacy">
+          This transcript can contain probe ROM addresses and device identifiers.
+          Review it before sharing. Nothing is uploaded. Manual commands and
+          free-form terminal input are not provided in this release.
+        </p>
+        <p id="diagnostic-action-status" role="status" aria-live="polite"></p>
+        <ol
+          id="protocol-log"
+          aria-label="Read-only diagnostic transcript"
+          aria-live="off"
+          tabindex="0"
+        ></ol>
+      </section>
+    </aside>
 
     <dialog id="install-dialog" aria-labelledby="install-dialog-title">
       <form method="dialog">

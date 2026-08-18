@@ -1297,6 +1297,12 @@ void SessionLogger::handleSerial(ExtraCommandHandler extraHandler) {
         serialLineOverflow_ = false;
         serialLine_ = "";
       } else if (serialLine_.length()) {
+        // Autonomous diagnostics such as TELEM are deliberately best-effort.
+        // If USB CDC drops the tail of one while the host opens the port, its
+        // newline can disappear too.  Start every solicited response at a
+        // fresh boundary so a valid response can never be joined to that
+        // truncated chatter and become invisible to a line-oriented client.
+        Serial.println();
         bool handled = processCommand(serialLine_);
         if (!handled && extraHandler) handled = extraHandler(serialLine_);
         if (!handled) Serial.println("LOG_ERROR unknown_command");

@@ -90,6 +90,19 @@ test("the portal has no third-party runtime assets", async () => {
   assert.match(html, /id="clear-transcript"/);
   assert.match(
     html,
+    /<aside[\s\S]*?id="diagnostic-console"[\s\S]*?data-expanded="false"/,
+  );
+  assert.match(
+    html,
+    /id="diagnostic-console-toggle"[\s\S]*?aria-expanded="false"[\s\S]*?aria-controls="diagnostic-console-panel"/,
+  );
+  assert.match(html, /<kbd[^>]*>F2<\/kbd>/);
+  assert.match(
+    html,
+    /id="diagnostic-console-panel"[\s\S]*?aria-labelledby="diagnostic-console-title"[\s\S]*?hidden/,
+  );
+  assert.match(
+    html,
     /id="install-progress-detail"[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?aria-atomic="true"/,
   );
   assert.match(html, /free-form terminal[\s\S]*?not provided in this release/i);
@@ -118,6 +131,11 @@ test("assembled-probe commissioning is the primary portal workflow", async () =>
   assert.match(source, /Keep every probe connected/);
   assert.match(source, /Learn five-scan baseline/);
   assert.match(source, /Check warmed P\$\{position\}/);
+  assert.match(
+    source,
+    /new WebSerialTransport\(port,[\s\S]*?suppressRxUntilDrained:\s*true/,
+    "portal connections must suppress unclassified reconnect backlog",
+  );
 });
 
 test("persisted flash recovery stays locked to the prepared package", async () => {

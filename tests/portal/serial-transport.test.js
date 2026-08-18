@@ -109,6 +109,128 @@ test("Web Serial transport streams split response frames into the protocol clien
   assert.deepEqual(port.openCalls, [{ baudRate: 115200 }]);
 });
 
+test("client discards a joined response and retries only SYS INFO", async () => {
+  let attempt = 0;
+  const port = new ScriptedPort(
+    new Map([
+      ["SYS INFO", () => {
+        attempt += 1;
+        return attempt === 1
+          ? ["TELEM sample=6 p1=18.81SYS_", `${infoLine().slice(4)}\r\n`]
+          : [lines(infoLine())];
+      }],
+    ]),
+  );
+  const transport = new WebSerialTransport(port);
+  await transport.open();
+  const client = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
+  assert.equal((await client.info()).product, "sauna_logger");
+  assert.deepEqual(port.commands, ["SYS INFO", "SYS INFO"]);
+  await transport.close();
+});
+
+test("unknown chatter is never split into a response and both attempts stay bounded", async () => {
+  const port = new ScriptedPort(
+    new Map([["SYS INFO", [`untrusted=${infoLine()}\r\n`]]]),
+  );
+  const transport = new WebSerialTransport(port);
+  await transport.open();
+  const client = new CommissioningProtocolClient(transport, { timeoutMs: 20 });
+  await assert.rejects(client.info(), ProtocolTimeoutError);
+  assert.deepEqual(port.commands, ["SYS INFO", "SYS INFO"]);
+  await transport.close();
+});
+
+test("repeated malformed or ambiguous joined responses fail closed", async () => {
+  const malformedPort = new ScriptedPort(
+    new Map([["SYS INFO", ["TELEM sample=6SYS_INFO protocol=not-a-number\r\n"]]]),
+  );
+  const malformedTransport = new WebSerialTransport(malformedPort);
+  await malformedTransport.open();
+  await assert.rejects(
+    new CommissioningProtocolClient(malformedTransport, { timeoutMs: 20 }).info(),
+    ProtocolError,
+  );
+  assert.deepEqual(malformedPort.commands, ["SYS INFO", "SYS INFO"]);
+  await malformedTransport.close();
+
+  const ambiguousPort = new ScriptedPort(
+    new Map([
+      ["SYS INFO", [`TELEM sample=6SYS_INFO protocol=1 ${infoLine()}\r\n`]],
+    ]),
+  );
+  const ambiguousTransport = new WebSerialTransport(ambiguousPort);
+  await ambiguousTransport.open();
+  await assert.rejects(
+    new CommissioningProtocolClient(ambiguousTransport, { timeoutMs: 20 }).info(),
+    ProtocolError,
+  );
+  assert.deepEqual(ambiguousPort.commands, ["SYS INFO", "SYS INFO"]);
+  await ambiguousTransport.close();
+});
+
+test("client drains complete and partial USB backlog before its first command", async () => {
+  const observed = [];
+  const port = new ScriptedPort(
+    new Map([["SYS INFO", [lines(infoLine())]]]),
+  );
+  const transport = new WebSerialTransport(port, {
+    onTraffic: (entry) => observed.push(entry),
+    suppressRxUntilDrained: true,
+  });
+  await transport.open();
+  port.enqueue("00254A6FDEADBEEF\r\nTELEM sample=4 p1=18.7");
+
+  const client = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
+  assert.equal((await client.info()).product, "sauna_logger");
+  assert.deepEqual(port.commands, ["SYS INFO"]);
+  assert.ok(observed.some((entry) =>
+    entry.line === "startup backlog discarded records=1 partial=1"
+  ));
+  assert.ok(observed.every((entry) => !/00254A6F|18\.7/.test(entry.line)));
+  await transport.close();
+});
+
+test("silent SYS INFO is retried once while disconnect is never retried", async () => {
+  const silentPort = new ScriptedPort(new Map([["SYS INFO", []]]));
+  const silentTransport = new WebSerialTransport(silentPort);
+  await silentTransport.open();
+  await assert.rejects(
+    new CommissioningProtocolClient(silentTransport, { timeoutMs: 15 }).info(),
+    ProtocolTimeoutError,
+  );
+  assert.deepEqual(silentPort.commands, ["SYS INFO", "SYS INFO"]);
+  await silentTransport.close();
+
+  const disconnectedPort = new ScriptedPort(
+    new Map([["SYS INFO", (activePort) => {
+      queueMicrotask(() => activePort.disconnect());
+      return [];
+    }]]),
+  );
+  const disconnectedTransport = new WebSerialTransport(disconnectedPort);
+  await disconnectedTransport.open();
+  await assert.rejects(
+    new CommissioningProtocolClient(disconnectedTransport, { timeoutMs: 100 }).info(),
+    SerialTransportError,
+  );
+  assert.deepEqual(disconnectedPort.commands, ["SYS INFO"]);
+  await disconnectedTransport.close();
+});
+
+test("a timed-out mutating command is never retried", async () => {
+  const command = `CFG SET position=1 rom=${ROMS[0]}`;
+  const port = new ScriptedPort(new Map([[command, []]]));
+  const transport = new WebSerialTransport(port);
+  await transport.open();
+  await assert.rejects(
+    new CommissioningProtocolClient(transport, { timeoutMs: 15 }).setProbe(1, ROMS[0]),
+    ProtocolTimeoutError,
+  );
+  assert.deepEqual(port.commands, [command]);
+  await transport.close();
+});
+
 test("traffic observer receives bounded TX/RX lines without affecting protocol", async () => {
   const observed = [];
   const port = new ScriptedPort(
@@ -150,6 +272,29 @@ test("traffic observer exceptions are swallowed", async () => {
   await transport.open();
   const client = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
   assert.equal((await client.info()).protocol, 1);
+  await transport.close();
+});
+
+test("traffic observer redacts log payload markers even after stale chatter", async () => {
+  const observed = [];
+  const port = new ScriptedPort();
+  const transport = new WebSerialTransport(port, {
+    onTraffic: (entry) => observed.push(entry),
+  });
+  await transport.open();
+  port.enqueue(lines(
+    "TELEM sample=8 p1=21.00LOG_DATA 00254A6F",
+    "staleLOG_CRASH_DATA DEADBEEF",
+  ));
+  await transport.readRecord(100);
+  await transport.readRecord(100);
+
+  const received = observed.filter((entry) => entry.direction === "rx");
+  assert.deepEqual(received.map((entry) => entry.line), [
+    "LOG_DATA payload=redacted",
+    "LOG_CRASH_DATA payload=redacted",
+  ]);
+  assert.doesNotMatch(JSON.stringify(received), /00254A6F|DEADBEEF/);
   await transport.close();
 });
 
@@ -278,6 +423,7 @@ test("legacy SYS INFO rejection reports incompatible firmware without timing out
     assert.doesNotMatch(error.message, /timed out/);
     return true;
   });
+  assert.deepEqual(port.commands, ["SYS INFO"]);
   await transport.close();
 });
 

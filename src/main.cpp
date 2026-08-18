@@ -2,6 +2,9 @@
 #include <DallasTemperature.h>
 #include <OneWire.h>
 
+#include <stdarg.h>
+#include <stdio.h>
+
 #include <esp_idf_version.h>
 #include <esp_ota_ops.h>
 #include <esp_private/esp_clk.h>
@@ -26,6 +29,7 @@ constexpr uint8_t kResolutionBits = 12;
 constexpr uint32_t kConversionTimeMs = 750;
 constexpr uint8_t kMaximumDiscoveredProbes = 16;
 constexpr uint32_t kCommissioningTimeoutMs = 10UL * 60UL * 1000UL;
+constexpr size_t kTelemetryLineCapacity = 192;
 constexpr char kGeometryName[] = "column8_20cm_v1";
 constexpr char kPartitionLayoutId[] = "sauna_ota_v1";
 // The web-flash bundle generator requires this exact, runtime-reachable
@@ -99,6 +103,24 @@ void printRtcSlowClockDiagnostic() {
 bool validProbeTemperature(float temperature) {
   return temperature != DEVICE_DISCONNECTED_C && temperature >= -55.0f &&
          temperature <= 125.0f;
+}
+
+bool appendFormatted(char* buffer, size_t capacity, size_t* length,
+                     const char* format, ...) {
+  if (!buffer || !length || !format || *length >= capacity) return false;
+
+  va_list arguments;
+  va_start(arguments, format);
+  const int written =
+      vsnprintf(buffer + *length, capacity - *length, format, arguments);
+  va_end(arguments);
+  if (written < 0 ||
+      static_cast<size_t>(written) >= capacity - *length) {
+    buffer[capacity - 1] = '\0';
+    return false;
+  }
+  *length += static_cast<size_t>(written);
+  return true;
 }
 
 void configureSensors() {
@@ -216,8 +238,11 @@ void collectSample(uint32_t now) {
   reading.capturedAtMs = now;
   reading.chipCentiC = INT16_MIN;
   ++sampleSequence;
-  if (Serial)
-    Serial.printf("TELEM sample=%lu", static_cast<unsigned long>(sampleSequence));
+  char telemetryLine[kTelemetryLineCapacity]{};
+  size_t telemetryLength = 0;
+  bool telemetryComplete = appendFormatted(
+      telemetryLine, sizeof(telemetryLine), &telemetryLength,
+      "TELEM sample=%lu", static_cast<unsigned long>(sampleSequence));
   for (uint8_t index = 0; index < sauna::kSensorCount; ++index) {
     float temperature = DEVICE_DISCONNECTED_C;
     if (activeProbeMappingReady) {
@@ -227,10 +252,18 @@ void collectSample(uint32_t now) {
     if (valid) {
       reading.validMask |= 1U << index;
       reading.centiC[index] = static_cast<int16_t>(lroundf(temperature * 100.0f));
-      if (Serial) Serial.printf(" p%u=%.2f", index + 1, temperature);
+      if (telemetryComplete) {
+        telemetryComplete = appendFormatted(
+            telemetryLine, sizeof(telemetryLine), &telemetryLength,
+            " p%u=%.2f", static_cast<unsigned>(index + 1), temperature);
+      }
     } else {
       reading.centiC[index] = INT16_MIN;
-      if (Serial) Serial.printf(" p%u=NA", index + 1);
+      if (telemetryComplete) {
+        telemetryComplete = appendFormatted(
+            telemetryLine, sizeof(telemetryLine), &telemetryLength,
+            " p%u=NA", static_cast<unsigned>(index + 1));
+      }
     }
   }
 
@@ -251,16 +284,34 @@ void collectSample(uint32_t now) {
   if (reading.validMask != 0xFFU)
     reading.statusFlags |= sauna::SensorSetDegraded;
 
-  if (Serial) {
-    if (reading.statusFlags & sauna::ChipTemperatureValid)
-      Serial.printf(" chip=%.2f", chipTemperature);
-    Serial.printf(" rtc=%s", slowClockSourceName(rtcSource));
-    Serial.println();
+  if (telemetryComplete &&
+      (reading.statusFlags & sauna::ChipTemperatureValid)) {
+    telemetryComplete = appendFormatted(
+        telemetryLine, sizeof(telemetryLine), &telemetryLength,
+        " chip=%.2f", chipTemperature);
+  }
+  if (telemetryComplete) {
+    telemetryComplete = appendFormatted(
+        telemetryLine, sizeof(telemetryLine), &telemetryLength, " rtc=%s\n",
+        slowClockSourceName(rtcSource));
   }
   logger.setProbeBusStatus(
       latestDiscovery.count,
       static_cast<uint8_t>(__builtin_popcount(reading.validMask)));
   logger.addSample(reading);
+
+  // TELEM is autonomous diagnostics, not part of record persistence.  Queue a
+  // complete newline-terminated line in one operation only when HWCDC reports
+  // enough room; otherwise omit this sample's diagnostic rather than emitting
+  // a fragment that can be joined to a later command response.
+  if (telemetryComplete && Serial) {
+    const int available = Serial.availableForWrite();
+    if (available >= 0 &&
+        telemetryLength <= static_cast<size_t>(available)) {
+      Serial.write(reinterpret_cast<const uint8_t*>(telemetryLine),
+                   telemetryLength);
+    }
+  }
 
   if (reading.validMask == 0) {
     if (++consecutiveEmptySamples >= 6) {

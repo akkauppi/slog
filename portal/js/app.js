@@ -23,7 +23,7 @@ import {
   webSerialSupported,
 } from "./serial-transport.js";
 import { FlashInstallationUi } from "./flash-ui.js";
-import { DiagnosticTranscript } from "./diagnostics.js";
+import { DiagnosticConsole, DiagnosticTranscript } from "./diagnostics.js";
 import { DataWorkspace } from "./data-workspace.js";
 
 const PENDING_STORAGE_KEY = "sauna-logger:probe-map:pending:v1";
@@ -84,6 +84,12 @@ const detailCrc = element("detail-crc");
 const detailUsb = element("detail-usb");
 const protocolLog = element("protocol-log");
 const diagnosticActionStatus = element("diagnostic-action-status");
+const diagnosticConsoleRoot = element("diagnostic-console");
+const diagnosticConsolePanel = element("diagnostic-console-panel");
+const diagnosticConsoleToggle = element("diagnostic-console-toggle");
+const diagnosticConsoleToggleLabel = element("diagnostic-console-toggle-label");
+const diagnosticConsoleCount = element("diagnostic-console-count");
+const diagnosticConsolePreview = element("diagnostic-console-preview");
 const copyTranscriptButton = element("copy-transcript");
 const downloadDiagnosticsButton = element("download-diagnostics");
 const clearTranscriptButton = element("clear-transcript");
@@ -110,6 +116,16 @@ let flashUi = null;
 let installedFirmwareExpectation = null;
 let dataWorkspace = null;
 
+const diagnosticConsole = new DiagnosticConsole({
+  root: diagnosticConsoleRoot,
+  panel: diagnosticConsolePanel,
+  toggle: diagnosticConsoleToggle,
+  toggleLabel: diagnosticConsoleToggleLabel,
+  count: diagnosticConsoleCount,
+  preview: diagnosticConsolePreview,
+  scrollTarget: protocolLog,
+});
+
 const diagnostics = new DiagnosticTranscript({
   list: protocolLog,
   status: diagnosticActionStatus,
@@ -123,6 +139,7 @@ const diagnostics = new DiagnosticTranscript({
     configuration_crc: detailCrc.textContent,
     usb_device: detailUsb.textContent,
   }),
+  onChange: (view) => diagnosticConsole.update(view),
 });
 
 function positionHeight(position) {
@@ -600,6 +617,10 @@ async function attachPort(port) {
   selectedPort = port;
   transport = new WebSerialTransport(port, {
     onTraffic: (entry) => diagnostics.serialTraffic(entry),
+    // A reconnect can begin in the middle of a buffered LOG_DATA line. Keep
+    // that unclassified backlog out of the visible/exported transcript; INFO
+    // drains it before managed traffic starts and reports only a safe count.
+    suppressRxUntilDrained: true,
   });
   await transport.open();
   client = new CommissioningProtocolClient(transport);

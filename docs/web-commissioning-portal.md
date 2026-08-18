@@ -103,6 +103,13 @@ remove all power before reconnecting USB. The portal reads `SYS INFO` and
 requires the expected protocol, `sauna_logger` product, `sauna_ota_v1`
 partition identifier,
 OTA application slot, firmware version, and source commit from the manifest.
+Before that first request it discards a short, bounded USB diagnostic backlog.
+If `SYS INFO` is silent or is visibly joined to a truncated telemetry record,
+the portal discards the damaged record and retries this read-only command once.
+It never extracts device identity from a damaged line, and it never applies
+this retry rule to configuration writes, deletion, or any other mutating
+command. Current firmware also emits telemetry as one best-effort bounded line
+and starts every solicited response at a fresh line boundary.
 The package, board identity, and these expected runtime fields remain in the
 recovery marker across reloads. The marker is cleared only after the exact
 running-firmware check succeeds; probe setup is offered only after that check.
@@ -180,15 +187,24 @@ run the same diagnostic `CFG BEGIN` / `CFG SCAN` / `CFG ABORT` live-bus check;
 only that successful check marks the map verified and clears the pending local
 record. Partial, malformed, or mismatched saved work is never promoted.
 
-## Advanced diagnostics
+## Diagnostics console
 
-The collapsed **Advanced mode** is a read-only aid for troubleshooting managed
-installation and probe setup. It retains at most 300 timestamped entries:
-textual serial TX/RX lines, sanitized esptool messages, state changes, and
-coarsened flash progress. Flashing frames are summarized; raw firmware payload
-bytes are not recorded. Manual commands and free-form terminal input are not
-provided in this release, so the managed workflow keeps exclusive control of
-the device.
+A compact **Diagnostics** strip remains at the bottom of every portal section.
+Select the strip, or press `F2` while focus is not in an editable field, to open
+the read-only console; use the same control to collapse it. `Escape` also
+collapses the console when focus is inside it. The page reserves space for both
+states, so the fixed console does not make the last controls unreachable.
+
+The console retains at most 300 timestamped entries: textual serial TX/RX
+lines, sanitized esptool messages, state changes, and coarsened flash progress.
+Its collapsed strip shows the newest retained event. Flashing frames are
+summarized; raw firmware payload bytes are not recorded. Unclassified bytes
+already buffered when a serial port opens are discarded and represented only
+by a record count, preventing a partial raw-log transfer from entering the
+transcript. Manual commands and free-form terminal input are not provided in
+this release, so the managed workflow keeps exclusive control of the device.
+**Advanced mode** in Prepare contains the corresponding firmware,
+configuration, and USB metadata.
 
 The transcript stays in this browser tab unless the user explicitly copies it
 or downloads a text file. It may contain probe ROM addresses, USB identifiers,
@@ -295,9 +311,8 @@ accepted only from `main`.
 ## Deliberately deferred
 
 - routine OTA updates or arbitrary firmware uploads
-- log download and offline analysis
 - build instructions inside the portal
 - record submission, comparison, accounts, or CRUD administration
 
-These remain separate slices after install, verification, and probe setup have
-been exercised end to end on hardware.
+These remain separate slices while the portal concentrates on installation,
+probe setup, local record preservation, and local analysis.

@@ -16,11 +16,45 @@ import {
 
 export const DEFAULT_BAUD_RATE = 115200;
 export const DEFAULT_RESPONSE_TIMEOUT_MS = 8000;
+export const DEFAULT_INPUT_QUIET_MS = 100;
+export const DEFAULT_INPUT_DRAIN_LIMIT_MS = 500;
+export const INITIAL_INFO_TIMEOUT_MS = 1000;
 // LOG_STATUS currently carries retention and commissioning diagnostics on one
 // line and can exceed the 512-byte SYS/CFG protocol limit. Receive framing is
 // deliberately a little wider; parseLine() continues to enforce 512 bytes for
 // every SYS/CFG message, while the log protocol applies this separate bound.
 export const MAXIMUM_SERIAL_RX_LINE_LENGTH = 1024;
+
+// Native USB CDC can expose the tail of an autonomous diagnostic when a host
+// opens the port, and an already-deployed firmware may then append a solicited
+// response if the diagnostic's newline was lost. Detection is intentionally
+// limited to firmware-owned chatter prefixes and the exact response name the
+// current transaction is waiting for. We discard the damaged record and retry
+// only the idempotent SYS INFO command; a suffix is never trusted as a frame.
+const RECOVERABLE_AUTONOMOUS_PREFIXES = Object.freeze([
+  "TELEM ",
+  "logger_event=",
+  "one_wire_event=",
+]);
+
+function containsJoinedExpectedResponse(line, expectedName) {
+  if (
+    typeof line !== "string" ||
+    typeof expectedName !== "string" ||
+    !RECOVERABLE_AUTONOMOUS_PREFIXES.some((prefix) => line.startsWith(prefix))
+  ) {
+    return false;
+  }
+  const marker = `${expectedName} `;
+  return line.indexOf(marker) > 0;
+}
+
+class JoinedInfoResponseError extends ProtocolError {
+  constructor() {
+    super("SYS INFO response was joined to autonomous serial chatter");
+    this.name = "JoinedInfoResponseError";
+  }
+}
 
 export class SerialTransportError extends Error {
   constructor(message, options) {
@@ -113,16 +147,29 @@ export async function requestSerialPort(
 
 /** A small reopenable wrapper around one previously authorized SerialPort. */
 export class WebSerialTransport {
-  constructor(port, { baudRate = DEFAULT_BAUD_RATE, onTraffic = null } = {}) {
+  constructor(
+    port,
+    {
+      baudRate = DEFAULT_BAUD_RATE,
+      onTraffic = null,
+      suppressRxUntilDrained = false,
+    } = {},
+  ) {
     if (!port || typeof port.open !== "function") {
       throw new TypeError("a Web Serial SerialPort is required");
     }
     if (onTraffic !== null && typeof onTraffic !== "function") {
       throw new TypeError("onTraffic must be a function or null");
     }
+    if (typeof suppressRxUntilDrained !== "boolean") {
+      throw new TypeError("suppressRxUntilDrained must be boolean");
+    }
     this.port = port;
     this.baudRate = baudRate;
     this._onTraffic = onTraffic;
+    this._suppressRxUntilDrained = suppressRxUntilDrained;
+    this._rxDiagnosticsSuppressed = suppressRxUntilDrained;
+    this._suppressedRxRecords = 0;
     this._decoder = new AsciiLineDecoder();
     this._records = [];
     this._waiters = [];
@@ -147,6 +194,8 @@ export class WebSerialTransport {
     this._records.length = 0;
     this._terminalError = null;
     this._decoder.reset();
+    this._rxDiagnosticsSuppressed = this._suppressRxUntilDrained;
+    this._suppressedRxRecords = 0;
     try {
       await this.port.open({ baudRate: this.baudRate });
       if (!this.port.readable || !this.port.writable) {
@@ -224,6 +273,51 @@ export class WebSerialTransport {
     return result;
   }
 
+  /**
+   * Discard the finite USB CDC backlog before the first solicited response.
+   * A partial final line is reset only after a quiet interval (or a bounded
+   * cap), while physical disconnects still fail the caller immediately.
+   */
+  async drainInputUntilQuiet({
+    quietMs = DEFAULT_INPUT_QUIET_MS,
+    limitMs = DEFAULT_INPUT_DRAIN_LIMIT_MS,
+  } = {}) {
+    if (!Number.isFinite(quietMs) || quietMs <= 0) {
+      throw new TypeError("serial input quiet interval must be positive");
+    }
+    if (!Number.isFinite(limitMs) || limitMs < quietMs) {
+      throw new TypeError("serial input drain limit must cover the quiet interval");
+    }
+    if (!this.isOpen) {
+      throw this._terminalError ?? new SerialTransportError("serial port is not open");
+    }
+
+    const deadline = Date.now() + limitMs;
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1, deadline - Date.now());
+      try {
+        await this.readRecord(Math.min(quietMs, remaining));
+      } catch (error) {
+        if (error instanceof ProtocolTimeoutError) break;
+        throw error;
+      }
+    }
+    const discardedRecords = this._suppressedRxRecords;
+    const discardedPartial = this._decoder.hasPartialLine();
+    this._records.length = 0;
+    this._decoder.reset();
+    this._rxDiagnosticsSuppressed = false;
+    this._suppressedRxRecords = 0;
+    if (discardedRecords || discardedPartial) {
+      this._observeTraffic({
+        kind: "serial",
+        direction: "rx",
+        line: `startup backlog discarded records=${discardedRecords} partial=${discardedPartial ? 1 : 0}`,
+        malformed: false,
+      });
+    }
+  }
+
   async close() {
     if (!this._opened && !this._reader && !this._writer) return;
     this._closing = true;
@@ -270,12 +364,16 @@ export class WebSerialTransport {
         if (done) break;
         if (!value) continue;
         for (const record of this._decoder.push(value)) {
-          this._observeTraffic({
-            kind: "serial",
-            direction: "rx",
-            line: record.error ? record.linePrefix : record.line,
-            malformed: Boolean(record.error),
-          });
+          if (this._rxDiagnosticsSuppressed) {
+            this._suppressedRxRecords += 1;
+          } else {
+            this._observeTraffic({
+              kind: "serial",
+              direction: "rx",
+              line: record.error ? record.linePrefix : record.line,
+              malformed: Boolean(record.error),
+            });
+          }
           this._deliver(record);
         }
       }
@@ -313,15 +411,17 @@ export class WebSerialTransport {
 
   _observeTraffic(entry) {
     let observed = entry;
-    if (
-      entry.direction === "rx" &&
-      /^LOG_(?:CRASH_)?DATA(?:\s|$)/.test(entry.line)
-    ) {
+    const containsCrashPayload =
+      entry.direction === "rx" && entry.line.includes("LOG_CRASH_DATA ");
+    const containsLogPayload =
+      entry.direction === "rx" && entry.line.includes("LOG_DATA ");
+    if (containsCrashPayload || containsLogPayload) {
       // Diagnostics may describe a transfer, but must not retain or render the
-      // raw session/core-dump bytes carried as hexadecimal text.
+      // raw session/core-dump bytes carried as hexadecimal text. Match the
+      // marker anywhere because a dropped newline can join it to stale chatter.
       observed = {
         ...entry,
-        line: entry.line.startsWith("LOG_CRASH_DATA")
+        line: containsCrashPayload
           ? "LOG_CRASH_DATA payload=redacted"
           : "LOG_DATA payload=redacted",
       };
@@ -360,8 +460,42 @@ export class CommissioningProtocolClient {
 
   info() {
     return this._enqueue(async () => {
-      const response = await this._requestUnlocked("SYS INFO", "SYS_INFO", "SYS_INFO");
-      return parseDeviceInfo(response[0]);
+      if (typeof this.transport.drainInputUntilQuiet === "function") {
+        await this.transport.drainInputUntilQuiet();
+      }
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const timeoutMs = attempt === 0
+            ? Math.min(this.timeoutMs, INITIAL_INFO_TIMEOUT_MS)
+            : this.timeoutMs;
+          const response = await this._requestUnlocked(
+            "SYS INFO",
+            "SYS_INFO",
+            "SYS_INFO",
+            null,
+            timeoutMs,
+          );
+          return parseDeviceInfo(response[0]);
+        } catch (error) {
+          const retryable =
+            error instanceof ProtocolTimeoutError ||
+            error instanceof JoinedInfoResponseError;
+          if (attempt === 0 && retryable) {
+            if (typeof this.transport.drainInputUntilQuiet === "function") {
+              await this.transport.drainInputUntilQuiet();
+            }
+            continue;
+          }
+          if (error instanceof JoinedInfoResponseError) {
+            throw new ProtocolError(
+              "SYS INFO response framing remained invalid after one safe retry",
+              { cause: error },
+            );
+          }
+          throw error;
+        }
+      }
+      throw new ProtocolTimeoutError("timed out waiting for response to \"SYS INFO\"");
     });
   }
 
@@ -490,9 +624,15 @@ export class CommissioningProtocolClient {
     return result;
   }
 
-  async _requestUnlocked(command, beginName, endName, memberName = null) {
+  async _requestUnlocked(
+    command,
+    beginName,
+    endName,
+    memberName = null,
+    timeoutMs = this.timeoutMs,
+  ) {
     await this.transport.writeLine(command);
-    const deadline = Date.now() + this.timeoutMs;
+    const deadline = Date.now() + timeoutMs;
     let started = false;
     const response = [];
     while (Date.now() < deadline) {
@@ -521,6 +661,13 @@ export class CommissioningProtocolClient {
           "the running logger rejected SYS INFO and has legacy or incompatible firmware; install the current bundled firmware before continuing",
           { code: LEGACY_INCOMPATIBLE_FIRMWARE },
         );
+      }
+      if (
+        command === "SYS INFO" &&
+        !started &&
+        containsJoinedExpectedResponse(line, beginName)
+      ) {
+        throw new JoinedInfoResponseError();
       }
       let message;
       try {
