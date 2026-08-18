@@ -19,6 +19,23 @@ observations and commands used to regenerate its CSV and interactive report.
 
 [![Eight probe temperatures from the first full sauna run](data/2026-08-16-sauna/session-1-main-chart.png)](docs/runs/2026-08-16-session-1.md)
 
+## Browser portal
+
+Open the hosted portal at **[akkauppi.github.io/saunan](https://akkauppi.github.io/saunan/)**.
+It can install the validated firmware bundle, commission an assembled probe
+column, preserve and manage logger records, analyze raw `.slog` files, and
+export selected data as CSV or Excel. The selected temperature probe also has a
+heating/cooling-rate chart, and linked power-restored segments can be viewed
+either as one run or separately without changing the raw metadata.
+
+Logger access requires Web Serial, so use a current desktop Chrome or Edge on
+Windows, macOS, or Linux. File-only analysis works in other modern browsers.
+All processing is local, nothing is uploaded, and the portal remains available
+offline after its application files and firmware package have been cached.
+GitHub Pages rebuilds the portal and its commit-identified firmware package
+from `main`; local development must use `tools/serve_portal.py` as described in
+[`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md).
+
 ## Wiring
 
 The firmware uses XIAO pin `D2` for the 1-Wire data line. Connect every sensor
