@@ -135,7 +135,10 @@ async function downloadCurrentFirmwarePackage() {
   let response;
   try {
     response = await fetch(MANIFEST_URL, {
-      cache: "no-cache",
+      // A mutable manifest is the atomic pointer to immutable package paths.
+      // Do not let a sub-second local rebuild reuse a conditional HTTP-cache
+      // response with the previous pointer.
+      cache: "no-store",
       credentials: "same-origin",
       redirect: "error",
     });
@@ -204,6 +207,7 @@ export class FlashInstallationUi {
     onConnection = () => {},
     onDiagnostic = () => {},
     onReadyForVerification,
+    onShowInstall = () => {},
     onStateChange = () => {},
     onSkip,
     recoveryStore = null,
@@ -214,6 +218,7 @@ export class FlashInstallationUi {
     this.onConnection = onConnection;
     this.onDiagnostic = onDiagnostic;
     this.onReadyForVerification = onReadyForVerification;
+    this.onShowInstall = onShowInstall;
     this.onStateChange = onStateChange;
     this.onSkip = onSkip;
 
@@ -243,6 +248,7 @@ export class FlashInstallationUi {
     this.recoveryStore = null;
     this.recovery = null;
     this.recoveryLoadError = null;
+    this.verificationReplacement = null;
     try {
       this.recoveryStore = recoveryStore ?? new FirmwareRecoveryStore({
         baseUrl: MANIFEST_URL,
@@ -296,6 +302,108 @@ export class FlashInstallationUi {
     });
     this.recovery = null;
     this.#stateChanged();
+  }
+
+  async prepareCurrentFirmwareReplacement() {
+    if (
+      !this.recovery ||
+      this.recovery.phase !== RecoveryPhase.VERIFICATION_REQUIRED ||
+      !this.recoveryStore
+    ) {
+      throw packageError(
+        "recovery-phase-invalid",
+        "current firmware replacement requires a completed write awaiting verification",
+      );
+    }
+    if (this.busy) {
+      throw packageError(
+        "operation-in-progress",
+        "another firmware operation is already running",
+      );
+    }
+    this.#setBusy(true);
+    try {
+      await this.recoveryStore.acquireLifecycleIfAvailable();
+      const verificationMarker = this.recoveryStore.readMarker();
+      if (
+        !verificationMarker ||
+        verificationMarker.phase !== RecoveryPhase.VERIFICATION_REQUIRED ||
+        JSON.stringify(verificationMarker) !== JSON.stringify(this.recovery)
+      ) {
+        throw packageError(
+          "recovery-record-conflict",
+          "the mandatory verification record changed before replacement",
+        );
+      }
+
+      // Validate and durably cache the new release without changing the old
+      // verification marker. The old package remains authoritative through
+      // download, BOOT selection, same-device checking, and confirmation.
+      const downloaded = await downloadCurrentFirmwarePackage();
+      const persisted = await this.recoveryStore.persistPreparedPackage(downloaded);
+      const adapter = await loadPinnedEsptoolJsAdapter({
+        onDiagnostic: (entry) => this.#handleCoreDiagnostic(entry),
+      });
+      const controller = new BrowserFlashController({
+        adapter,
+        requestPort: () => navigator.serial.requestPort(),
+        onDiagnostic: (entry) => this.#handleCoreDiagnostic(entry),
+        onStateChange: () => this.#stateChanged(),
+      });
+      const prepared = await controller.prepare(
+        persisted.manifest,
+        preparedLoadOptions(persisted),
+      );
+      const rechecked = this.recoveryStore.readMarker();
+      if (
+        !rechecked ||
+        JSON.stringify(rechecked) !== JSON.stringify(verificationMarker)
+      ) {
+        throw packageError(
+          "recovery-record-conflict",
+          "the mandatory verification record changed while the current package was checked",
+        );
+      }
+
+      this.verificationReplacement = verificationMarker;
+      this.recovery = rechecked;
+      this.persistedPrepared = persisted;
+      this.prepared = prepared;
+      this.controller = controller;
+      this.onActivity(
+        `Validated current firmware ${prepared.manifest.release.version} for same-logger replacement`,
+      );
+      this.onShowInstall();
+      this.#showReadyToConnect();
+      return {
+        packageSha256: prepared.packageSha256,
+        expectation: firmwareExpectation(prepared),
+      };
+    } finally {
+      this.#setBusy(false);
+    }
+  }
+
+  #requireDurableVerificationMarker(expected) {
+    if (!this.recoveryStore) {
+      throw packageError(
+        "recovery-record-missing",
+        "mandatory firmware verification marker is missing",
+      );
+    }
+    let durable = this.recoveryStore.readMarker();
+    if (!durable) durable = this.recoveryStore.writeMarker(expected);
+    if (
+      durable.phase !== RecoveryPhase.VERIFICATION_REQUIRED ||
+      JSON.stringify(durable) !== JSON.stringify(expected)
+    ) {
+      throw packageError(
+        "recovery-record-conflict",
+        "the mandatory verification record changed before replacement",
+      );
+    }
+    this.recovery = durable;
+    return durable;
   }
 
   #requireDurableWriteMarker() {
@@ -460,6 +568,17 @@ export class FlashInstallationUi {
           );
         }
         this.recovery = durable;
+        if (this.recovery.phase === RecoveryPhase.VERIFICATION_REQUIRED) {
+          // The completed write is already committed in the durable marker.
+          // Runtime verification needs only its expected identity; avoiding a
+          // package restore here also lets a legacy completed install take the
+          // guarded same-device transition to the current package.
+          this.onActivity(
+            `Restored mandatory firmware verification ${this.recovery.expectation.firmware}`,
+          );
+          this.onReadyForVerification({ ...this.recovery.expectation });
+          return;
+        }
         persisted = await restoreOrRepairRecoveryPackage({
           store: this.recoveryStore,
           marker: this.recovery,
@@ -490,7 +609,11 @@ export class FlashInstallationUi {
       this.persistedPrepared = persisted;
       this.prepared = await this.controller.prepare(
         persisted.manifest,
-        preparedLoadOptions(persisted),
+        {
+          ...preparedLoadOptions(persisted),
+          allowLegacyWriteRecovery:
+            this.recovery?.phase === RecoveryPhase.WRITE_REQUIRED,
+        },
       );
       if (this.recovery) {
         if (
@@ -503,20 +626,14 @@ export class FlashInstallationUi {
           error.code = "recovery-package-mismatch";
           throw error;
         }
-        if (this.recovery.phase === RecoveryPhase.VERIFICATION_REQUIRED) {
-          this.onActivity(
-            `Restored mandatory firmware verification ${this.recovery.expectation.firmware}`,
-          );
-          this.onReadyForVerification({ ...this.recovery.expectation });
-          return;
-        }
         this.controller.markRecoveryRequired(
           this.recovery.packageSha256,
           this.recovery.deviceIdHash,
         );
       }
+      const sourceCommit = this.prepared.manifest.release.source_commit;
       this.onActivity(
-        `Validated firmware ${this.prepared.manifest.release.version} and ${this.prepared.files.length} image hashes`,
+        `Validated firmware ${this.prepared.manifest.release.version} · source ${sourceCommit.slice(0, 12)} · package ${this.prepared.packageSha256.slice(0, 12)} · ${this.prepared.files.length} image hashes`,
       );
       this.#showReadyToConnect();
     } catch (error) {
@@ -528,13 +645,22 @@ export class FlashInstallationUi {
 
   #showReadyToConnect() {
     const recovering = Boolean(this.recovery);
+    const replacingVerification = Boolean(this.verificationReplacement);
     this.#setTask({
       kicker: recovering ? "Stage 1 · Recovery" : "Stage 1 · Install firmware",
-      title: recovering ? "Recover the same firmware package" : "Enter BOOT mode",
-      description: recovering
-        ? "Put the same XIAO ESP32-C3 into BOOT mode. The portal will reuse only the package whose integrity was checked above."
+      title: replacingVerification
+        ? "Install current firmware on the same logger"
+        : recovering
+          ? "Recover the same firmware package"
+          : "Enter BOOT mode",
+      description: replacingVerification
+        ? "Put the logger that failed the running-firmware check into BOOT mode. The portal will reject every other physical ESP32-C3 before writing."
+        : recovering
+          ? "Put the same XIAO ESP32-C3 into BOOT mode. The portal will reuse only the package whose integrity was checked above."
         : "Disconnect USB, hold BOOT while reconnecting it, then release BOOT after the computer detects the board.",
-      message: "The bundled package passed its manifest, size, and SHA-256 checks.",
+      message: replacingVerification
+        ? "The current package is validated and cached. The previous verification record is still protected until this logger is identified."
+        : "The bundled package passed its manifest, size, and SHA-256 checks.",
       kind: "success",
     });
     this.bootInstructions.hidden = false;
@@ -542,7 +668,11 @@ export class FlashInstallationUi {
     this.#showSummary();
     this.#setStage(1);
     this.#button(this.primary, {
-      label: recovering ? "Choose device for recovery" : "Choose bootloader device",
+      label: replacingVerification
+        ? "Choose original logger bootloader"
+        : recovering
+          ? "Choose device for recovery"
+          : "Choose bootloader device",
       // connect() must be the first awaited operation in this user gesture.
       handler: () => this.#connectBootloader(),
       hidden: false,
@@ -602,6 +732,16 @@ export class FlashInstallationUi {
       // Nothing asynchronous may precede this call: Web Serial requires the
       // requestPort() nested inside connect() to retain this click gesture.
       await this.controller.connect();
+      if (
+        this.verificationReplacement &&
+        this.controller.snapshot.deviceIdHash !==
+          this.verificationReplacement.deviceIdHash
+      ) {
+        throw packageError(
+          "device-mismatch",
+          "the selected bootloader is not the logger awaiting verification",
+        );
+      }
       this.onConnection(true, "ESP32-C3 bootloader", false);
       this.onActivity(`Validated bootloader target ${this.controller.snapshot.chip}`);
       if (this.controller.snapshot.phase === FlashPhase.READY_TO_FLASH) {
@@ -632,11 +772,15 @@ export class FlashInstallationUi {
   }
 
   #showReadyToFlash() {
+    const replacingVerification = Boolean(this.verificationReplacement);
     this.#setTask({
       kicker: "Stage 1 · Confirm installation",
-      title: "ESP32-C3 and firmware verified",
-      description:
-        "Review the fixed release below. Installation writes only its declared images; there is no whole-flash erase or replacement-file option.",
+      title: replacingVerification
+        ? "Original logger and current firmware verified"
+        : "ESP32-C3 and firmware verified",
+      description: replacingVerification
+        ? "Review the current fixed release. The previous verification record remains protected until you confirm this same-board write."
+        : "Review the fixed release below. Installation writes only its declared images; there is no whole-flash erase or replacement-file option.",
     });
     this.bootInstructions.hidden = true;
     this.note.hidden = false;
@@ -677,10 +821,13 @@ export class FlashInstallationUi {
 
   async #cancelBeforeWrite() {
     if (!this.controller?.snapshot.canCancel || this.busy) return;
+    const replacingVerification = Boolean(this.verificationReplacement);
     this.#setBusy(true);
     try {
       await this.controller.cancel();
-      await this.recoveryStore?.releaseLifecycle();
+      if (!replacingVerification) {
+        await this.recoveryStore?.releaseLifecycle();
+      }
       this.onConnection(false, "Not connected", false);
       this.onActivity("Canceled firmware installation before writing");
       // A canceled controller cannot connect again. Reconstruct it from the
@@ -688,6 +835,7 @@ export class FlashInstallationUi {
       this.controller = null;
       this.prepared = null;
       this.persistedPrepared = null;
+      this.verificationReplacement = null;
       this.#showPreparingPackage();
       await this.#preparePackage();
     } catch (error) {
@@ -702,13 +850,18 @@ export class FlashInstallationUi {
     if (this.busy) return;
     this.#setBusy(true);
     this.lastProgressKey = null;
+    const verificationReplacement = this.verificationReplacement;
     try {
       await this.recoveryStore.acquireLifecycleIfAvailable();
-      this.recovery = await this.recoveryStore.beginWrite({
-        packageSha256: this.prepared.packageSha256,
-        deviceIdHash: this.controller.snapshot.deviceIdHash,
-        expectation: firmwareExpectation(this.prepared),
-      });
+      if (verificationReplacement) {
+        this.#requireDurableVerificationMarker(verificationReplacement);
+      } else {
+        this.recovery = await this.recoveryStore.beginWrite({
+          packageSha256: this.prepared.packageSha256,
+          deviceIdHash: this.controller.snapshot.deviceIdHash,
+          expectation: firmwareExpectation(this.prepared),
+        });
+      }
     } catch (error) {
       try {
         this.recovery = this.recoveryStore.readMarker();
@@ -730,8 +883,20 @@ export class FlashInstallationUi {
     this.#setStage(2, 2);
     this.#stateChanged();
     try {
-      this.#requireDurableWriteMarker();
+      if (!verificationReplacement) this.#requireDurableWriteMarker();
       await this.controller.flash({
+        beforeWrite: verificationReplacement
+          ? async ({ packageSha256, deviceIdHash }) => {
+              const replacement = await this.recoveryStore.beginReplacementWrite({
+                verificationMarker: verificationReplacement,
+                packageSha256,
+                deviceIdHash,
+                expectation: firmwareExpectation(this.prepared),
+              });
+              this.recovery = replacement;
+              this.verificationReplacement = null;
+            }
+          : null,
         onProgress: (progress) => this.#renderProgress(progress),
       });
       this.recovery = this.recoveryStore.markVerificationRequired();

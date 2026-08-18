@@ -146,6 +146,36 @@ test("persisted flash recovery stays locked to the prepared package", async () =
   assert.match(store, /RECOVERY_PACKAGE_CACHE_PREFIX\s*=\s*\n?\s*"sauna-firmware-recovery-v1-"/);
   assert.match(store, /RECOVERY_LIFECYCLE_LOCK/);
   assert.match(store, /\{ mode: "exclusive", ifAvailable: true \}/);
+  assert.match(
+    store,
+    /async beginReplacementWrite\([\s\S]*?previous\.phase !== RecoveryPhase\.VERIFICATION_REQUIRED[\s\S]*?connectedDeviceIdHash !== previous\.deviceIdHash[\s\S]*?restorePreparedPackage\(packageSha256\)[\s\S]*?phase: RecoveryPhase\.WRITE_REQUIRED/,
+    "only an exact same-device post-write verification may advance to a replacement write",
+  );
+  assert.match(
+    source,
+    /async prepareCurrentFirmwareReplacement\(\)[\s\S]*?downloadCurrentFirmwarePackage\(\)[\s\S]*?persistPreparedPackage\(downloaded\)[\s\S]*?this\.verificationReplacement = verificationMarker/,
+    "the current package must be validated and cached without replacing the old marker",
+  );
+  assert.match(
+    source,
+    /await this\.controller\.connect\(\);[\s\S]*?this\.controller\.snapshot\.deviceIdHash !==[\s\S]*?this\.verificationReplacement\.deviceIdHash/,
+    "replacement must identify the original bootloader before confirmation",
+  );
+  assert.match(
+    source,
+    /beforeWrite: verificationReplacement[\s\S]*?beginReplacementWrite\([\s\S]*?this\.verificationReplacement = null/,
+    "the durable marker advances only in the controller's final pre-write gate",
+  );
+  assert.match(
+    source,
+    /const replacingVerification = Boolean\(this\.verificationReplacement\);[\s\S]*?await this\.controller\.cancel\(\);[\s\S]*?if \(!replacingVerification\) \{[\s\S]*?releaseLifecycle\(\)[\s\S]*?this\.verificationReplacement = null[\s\S]*?await this\.#preparePackage\(\)/,
+    "canceling a same-logger replacement must preserve the old marker and lifecycle lock",
+  );
+  assert.match(
+    app,
+    /error instanceof ProtocolError[\s\S]*?error\.code === LEGACY_INCOMPATIBLE_FIRMWARE[\s\S]*?prepareCurrentFirmwareReplacement\(\)/,
+    "only the stable legacy/incompatible error enables the replacement UX",
+  );
 });
 
 test("the pinned esptool-js runtime is precached and unchanged", async () => {
@@ -198,4 +228,9 @@ test("manifest colors and service-worker cache use the portal release tokens", a
   assert.equal(declaredRevision[1], digest.digest("hex").slice(0, 12));
   assert.match(worker, /cache\.match\(request\)/);
   assert.doesNotMatch(worker, /caches\.match\(request\)/);
+  assert.match(
+    worker,
+    /url\.href\.startsWith\(FIRMWARE_ROOT\)[\s\S]*?event\.respondWith\(fetch\(request\)\);[\s\S]*?return;/,
+    "published firmware must bypass the mutable app-shell cache",
+  );
 });

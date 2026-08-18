@@ -28,6 +28,11 @@ constexpr uint8_t kMaximumDiscoveredProbes = 16;
 constexpr uint32_t kCommissioningTimeoutMs = 10UL * 60UL * 1000UL;
 constexpr char kGeometryName[] = "column8_20cm_v1";
 constexpr char kPartitionLayoutId[] = "sauna_ota_v1";
+// The web-flash bundle generator requires this exact, runtime-reachable
+// sentinel before it will publish an application image. Keep it in lockstep
+// with the manifest's commissioning_protocol field.
+constexpr char kCommissioningProtocolSentinel[] =
+    "SAUNA_COMMISSIONING_PROTOCOL=1";
 
 struct DiscoveredProbe {
   uint8_t rom[sauna::kProbeRomBytes];
@@ -402,11 +407,12 @@ bool processSystemCommand(const String& command) {
     Serial.printf(
         "SYS_INFO protocol=1 product=sauna_logger firmware=%s commit=%s "
         "partition=%s ota=%s configured=%u active_generation=%u "
-        "restart_required=%u commissioning=%u\n",
+        "restart_required=%u commissioning=%u compatibility=%s\n",
         SAUNA_FIRMWARE_VERSION, SAUNA_SOURCE_COMMIT, kPartitionLayoutId,
         running ? running->label : "unknown", activeProbeMappingReady,
         activeProbeMappingReady ? activeProbeMapping.generation : 0,
-        probeConfigRestartRequired, commissioningLocked);
+        probeConfigRestartRequired, commissioningLocked,
+        kCommissioningProtocolSentinel);
   } else if (command == "SYS REBOOT") {
     if (logger.active()) {
       Serial.println("SYS_ERROR command=reboot code=active_session");

@@ -240,6 +240,23 @@ test("device errors are terminal even before a response frame", async () => {
   await transport.close();
 });
 
+test("legacy SYS INFO rejection reports incompatible firmware without timing out", async () => {
+  const port = new ScriptedPort(
+    new Map([["SYS INFO", [lines("LOG_ERROR unknown_command")]]]),
+  );
+  const transport = new WebSerialTransport(port);
+  await transport.open();
+  const client = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
+  await assert.rejects(client.info(), (error) => {
+    assert.ok(error instanceof ProtocolError);
+    assert.equal(error.code, "legacy-incompatible-firmware");
+    assert.match(error.message, /legacy or incompatible firmware/);
+    assert.doesNotMatch(error.message, /timed out/);
+    return true;
+  });
+  await transport.close();
+});
+
 test("unexpected named data and non-ASCII inside a frame fail closed", async () => {
   const begin = scanLines(ROMS.slice(0, 1))[0];
   const cases = [

@@ -1,6 +1,7 @@
 import {
   DeviceError,
   GEOMETRY_ID,
+  LEGACY_INCOMPATIBLE_FIRMWARE,
   MAXIMUM_LINE_LENGTH,
   ProtocolError,
   normalizeRom,
@@ -476,6 +477,16 @@ export class CommissioningProtocolClient {
       }
       const line = record.line;
       if (!line) continue;
+      if (
+        command === "SYS INFO" &&
+        !started &&
+        line.trim() === "LOG_ERROR unknown_command"
+      ) {
+        throw new ProtocolError(
+          "the running logger rejected SYS INFO and has legacy or incompatible firmware; install the current bundled firmware before continuing",
+          { code: LEGACY_INCOMPATIBLE_FIRMWARE },
+        );
+      }
       let message;
       try {
         message = parseLine(line);

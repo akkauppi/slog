@@ -42,8 +42,11 @@ Close PlatformIO and other serial monitors first. If the port does not appear,
 repeat the sequence rather than choosing an unrelated serial device.
 
 The page loads only `./generated/firmware/manifest.json` from its own HTTPS or
-localhost origin. Manifest schema version 1 fixes the product, ESP32-C3 target,
-XIAO board, 4 MB flash, partition-layout identifier, image roles and offsets.
+localhost origin. Manifest schema version 2 fixes the product, commissioning
+protocol version 1, ESP32-C3 target, XIAO board, 4 MB flash,
+partition-layout identifier, image roles and offsets. The package generator
+also requires the exact compiled `SAUNA_COMMISSIONING_PROTOCOL=1` sentinel, so
+an older coherent image cannot be relabeled as portal-compatible.
 Every image is fetched from the generated package and checked against its
 declared size and SHA-256 digest before writing. The browser flasher dependency
 is a reviewed, pinned local copy; installation never imports code from a CDN.
@@ -74,14 +77,23 @@ BOOT mode and choose **Recover installation**. Recovery restores and
 revalidates those exact cached bytes, rejects a different physical ESP32-C3,
 and does not offer an erase fallback.
 
+Schema-1 packages are rejected before images are loaded or a serial port is
+requested. The sole exception is an exact schema-1 package already named by a
+durable `WRITE_REQUIRED` recovery marker; finishing that interrupted write is
+safer than changing packages mid-recovery. A completed legacy write awaiting
+runtime verification can instead use the bounded same-device replacement path
+below.
+
 The portal also requires an origin-wide exclusive Web Lock before it creates or
 changes that marker. It requests the lock without waiting: if another portal
 tab owns an installation or the browser has no Web Locks API, writing stays
 disabled. The owning tab keeps the lock through write/reset uncertainty,
 post-write verification, and removal of the verified marker. A definite
-pre-write cancellation releases it only after the bootloader transport has
-been reset and closed; closing the page releases the browser lock naturally
-while the durable marker remains available to the next recovery tab.
+pre-write cancellation of a new installation releases it only after the
+bootloader transport has been reset and closed. Cancellation of the bounded
+same-logger replacement described below keeps the lock while the portal returns
+to the old mandatory verification. Closing the page releases the browser lock
+naturally while the durable marker remains available to the next recovery tab.
 
 After a successful write, reset the board into normal operation and reconnect
 to the application serial port. The portal reads `SYS INFO` and requires the
@@ -95,6 +107,19 @@ hardware identity from the running application, so the user must still choose
 the serial port that reappears from the same physical board. The portal proves
 the running release identity at that boundary, but cannot cryptographically
 bind the application port to the earlier bootloader port.
+
+One bounded replacement path exists for a completed, device-MD5-verified write
+whose running firmware explicitly rejects `SYS INFO` as legacy or
+incompatible. This path is never available while a write outcome is uncertain.
+The portal keeps the old `VERIFICATION_REQUIRED` marker and origin-wide lock
+while it downloads, validates, and caches the current published package. It
+then asks for the original logger in BOOT mode and compares the bootloader's
+hashed hardware identity with the old marker. A different board, download or
+validation failure, chooser cancellation, or any other definite pre-write
+failure leaves the old marker unchanged. Only after package and same-board
+preflight, immediately before writing may begin, is the marker atomically
+advanced to `WRITE_REQUIRED` for the current package. The normal exact runtime
+verification must still succeed before that new marker is cleared.
 
 ## Probe commissioning
 
@@ -154,13 +179,26 @@ firmware and create a locally validated portal package from the repository root:
 .venv/bin/python tools/build_web_flash_bundle.py --build
 ```
 
-This creates `portal/generated/firmware/manifest.json` and its image files from
-the pinned PlatformIO build. The generator decodes `partitions.bin`, verifies
-its MD5 record, compares it exactly with `partitions.csv`, reads flash offsets
-from ESP-IDF's generated `flasher_args.json`, and checks that the compiled
-firmware contains the same release identity placed in the manifest. A source
-checkout without that generated directory displays an honest unavailable
-state; it does not substitute a remote or user-selected binary.
+This creates `portal/generated/firmware/manifest.json` and a content-addressed
+image directory under `portal/generated/firmware/packages/` from the pinned
+PlatformIO build. The generator decodes `partitions.bin`, verifies its MD5
+record, compares it exactly with `partitions.csv`, reads flash offsets from
+ESP-IDF's generated `flasher_args.json`, and checks that the compiled firmware
+contains the same release identity placed in the manifest. A source checkout
+without that generated directory displays an honest unavailable state; it does
+not substitute a remote or user-selected binary.
+
+Publication is safe while a local server is running. All four images are first
+copied into a private staging directory, the completed directory is renamed to
+its immutable package identity, and `manifest.json` is replaced atomically as
+the final commit point. Previously published package directories are retained,
+so a tab that read the previous manifest can still finish validating exactly
+those bytes. Do not manually edit files below `packages/`; stop the local
+server before deleting `portal/generated/firmware` to reclaim development
+packages. After generating a new package, reload any tab that had already
+finished its package check. A prepared tab intentionally remains bound to the
+exact package it validated instead of changing firmware underneath a device
+workflow.
 
 Public release automation should add `--require-release-metadata` so dirty,
 unknown, or abbreviated source identities cannot be published.
@@ -187,16 +225,17 @@ manual XIAO ESP32-C3 test before it can be called production-ready.
 
 ## Offline and GitHub Pages behavior
 
-The application shell and pinned flashing runtime are cached locally. A
-successfully validated same-origin firmware package is also copied to a
-dedicated cache keyed by its package SHA-256. That immutable cache is outside
-the service worker's release-cache cleanup, so an interrupted installation can
-still restore the exact package after a portal deployment or reload. The most
-recent complete cached package can also be installed without a network
-connection. Browser permission to use a serial port is separate and may need
-to be granted again. Clearing site data removes both the offline package and
-any recovery marker, so do not clear it while installation or verification is
-pending.
+The application shell and pinned flashing runtime are cached locally. The
+service worker deliberately does not cache the mutable published firmware
+manifest. A successfully validated same-origin firmware package is instead
+copied to a dedicated cache keyed by its package SHA-256. That immutable cache
+is outside the service worker's release-cache cleanup, so an interrupted
+installation can still restore the exact package after a portal deployment or
+reload. The most recent complete cached package can also be installed without
+a network connection. Browser permission to use a serial port is separate and
+may need to be granted again. Clearing site data removes both the offline
+package and any recovery marker, so do not clear it while installation or
+verification is pending.
 
 If the marker survives but its dedicated cache entry is missing or damaged,
 the portal may fetch only its fixed same-origin release URL. It fully validates

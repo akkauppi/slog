@@ -84,7 +84,8 @@ async function preparedFixture(version = "0.3.0-dev") {
     });
   }
   const manifest = {
-    schema_version: 1,
+    schema_version: 2,
+    commissioning_protocol: 1,
     product: "sauna_logger",
     release: {
       version,
@@ -107,6 +108,22 @@ async function preparedFixture(version = "0.3.0-dev") {
     manifestUrl: "https://example.test/generated/firmware/manifest.json",
     digest,
     loadFile: async (_url, file) => contents[file.path],
+  });
+}
+
+async function legacyPreparedFixture() {
+  const current = await preparedFixture();
+  const manifest = structuredClone(current.manifest);
+  manifest.schema_version = 1;
+  delete manifest.commissioning_protocol;
+  const contents = new Map(
+    current.files.map((file) => [file.path, new Uint8Array(file.data)]),
+  );
+  return prepareFirmwarePackage(manifest, {
+    manifestUrl: current.manifestUrl,
+    digest,
+    allowLegacyWriteRecovery: true,
+    loadFile: async (_url, file) => contents.get(file.path),
   });
 }
 
@@ -208,6 +225,29 @@ function makeStore({
   });
 }
 
+async function seedDurablePackage(cacheStorage, prepared, savedAt) {
+  const cache = await cacheStorage.open(
+    `${RECOVERY_PACKAGE_CACHE_PREFIX}${prepared.packageSha256}`,
+  );
+  const base = `https://example.test/__sauna_firmware_recovery__/v1/${prepared.packageSha256}`;
+  for (const [index, file] of prepared.files.entries()) {
+    await cache.put(
+      `${base}/${index}-${file.role}.bin`,
+      new Response(new Uint8Array(file.data)),
+    );
+  }
+  await cache.put(
+    `${base}/record.json`,
+    new Response(JSON.stringify({
+      schemaVersion: 1,
+      packageSha256: prepared.packageSha256,
+      manifestUrl: prepared.manifestUrl,
+      manifest: prepared.manifest,
+      savedAt,
+    })),
+  );
+}
+
 test("content-addressed cache restores and revalidates the exact four images", async () => {
   const storage = new MemoryStorage();
   const cacheStorage = new MemoryCacheStorage();
@@ -237,6 +277,40 @@ test("content-addressed cache restores and revalidates the exact four images", a
     store.restorePreparedPackage(prepared.packageSha256),
     (error) => error.code === "image-size-mismatch" || error.code === "image-hash-mismatch",
   );
+});
+
+test("a durable legacy package is accepted only for its interrupted-write marker", async () => {
+  const storage = new MemoryStorage();
+  const cacheStorage = new MemoryCacheStorage();
+  const store = makeStore({ storage, cacheStorage });
+  const prepared = await legacyPreparedFixture();
+  const timestamp = new Date(0).toISOString();
+  await seedDurablePackage(cacheStorage, prepared, timestamp);
+  await store.acquireLifecycleIfAvailable();
+  const marker = store.writeMarker({
+    schemaVersion: 1,
+    phase: RecoveryPhase.WRITE_REQUIRED,
+    packageSha256: prepared.packageSha256,
+    deviceIdHash: "a".repeat(64),
+    expectation: expectation(prepared),
+    startedAt: timestamp,
+    updatedAt: timestamp,
+  });
+
+  await assert.rejects(
+    store.restorePreparedPackage(prepared.packageSha256),
+    (error) => error.code === "manifest-commissioning-protocol-unsupported",
+  );
+  const recovered = await restoreOrRepairRecoveryPackage({
+    store,
+    marker,
+    downloadPackage: async () => {
+      throw new Error("durable legacy recovery must not download");
+    },
+  });
+  assert.equal(recovered.packageSha256, prepared.packageSha256);
+  assert.equal(recovered.legacyWriteRecovery, true);
+  await store.releaseLifecycle();
 });
 
 test("a write is blocked unless its marker round-trips through localStorage", async () => {
@@ -356,6 +430,109 @@ test("reload preserves board, package, and exact post-flash verification target"
     prepared.packageSha256,
     "verified packages remain as immutable offline install sources",
   );
+});
+
+test("post-write verification may advance to a validated current package only on the same board", async () => {
+  const storage = new MemoryStorage();
+  const cacheStorage = new MemoryCacheStorage();
+  const lockManager = new MemoryLockManager();
+  const store = makeStore({
+    storage,
+    cacheStorage,
+    now: 1_000,
+    lockManager,
+  });
+  const previous = await preparedFixture("0.3.0-dev");
+  const current = await preparedFixture("0.3.1-dev");
+  await store.persistPreparedPackage(previous);
+  await store.persistPreparedPackage(current);
+  await store.acquireLifecycleIfAvailable();
+  const deviceIdHash = "7".repeat(64);
+  const writeMarker = await store.beginWrite({
+    packageSha256: previous.packageSha256,
+    deviceIdHash,
+    expectation: expectation(previous),
+  });
+
+  await assert.rejects(
+    store.beginReplacementWrite({
+      verificationMarker: writeMarker,
+      packageSha256: current.packageSha256,
+      deviceIdHash,
+      expectation: expectation(current),
+    }),
+    (error) => error.code === "recovery-phase-invalid",
+  );
+  assert.deepEqual(store.readMarker(), writeMarker);
+
+  const verificationMarker = store.markVerificationRequired();
+
+  await assert.rejects(
+    store.beginReplacementWrite({
+      verificationMarker,
+      packageSha256: current.packageSha256,
+      deviceIdHash: "8".repeat(64),
+      expectation: expectation(current),
+    }),
+    (error) => error.code === "device-mismatch",
+  );
+  assert.deepEqual(store.readMarker(), verificationMarker);
+
+  const replacement = await store.beginReplacementWrite({
+    verificationMarker,
+    packageSha256: current.packageSha256,
+    deviceIdHash,
+    expectation: expectation(current),
+  });
+  assert.equal(replacement.phase, RecoveryPhase.WRITE_REQUIRED);
+  assert.equal(replacement.packageSha256, current.packageSha256);
+  assert.equal(replacement.deviceIdHash, deviceIdHash);
+  assert.deepEqual(replacement.expectation, expectation(current));
+  assert.equal(replacement.startedAt, verificationMarker.startedAt);
+  assert.equal(store.ownsLifecycle, true);
+  assert.deepEqual(store.readMarker(), replacement);
+});
+
+test("replacement package and marker failures preserve the old verification marker", async () => {
+  const storage = new MemoryStorage();
+  const cacheStorage = new MemoryCacheStorage();
+  const store = makeStore({ storage, cacheStorage, now: 2_000 });
+  const previous = await preparedFixture("0.3.0-dev");
+  const current = await preparedFixture("0.3.1-dev");
+  await store.persistPreparedPackage(previous);
+  await store.persistPreparedPackage(current);
+  await store.acquireLifecycleIfAvailable();
+  const deviceIdHash = "9".repeat(64);
+  await store.beginWrite({
+    packageSha256: previous.packageSha256,
+    deviceIdHash,
+    expectation: expectation(previous),
+  });
+  const verificationMarker = store.markVerificationRequired();
+
+  await assert.rejects(
+    store.beginReplacementWrite({
+      verificationMarker,
+      packageSha256: current.packageSha256,
+      deviceIdHash,
+      expectation: { ...expectation(current), firmware: "not-current" },
+    }),
+    (error) => error.code === "recovery-package-mismatch",
+  );
+  assert.deepEqual(store.readMarker(), verificationMarker);
+
+  storage.failWrites = true;
+  await assert.rejects(
+    store.beginReplacementWrite({
+      verificationMarker,
+      packageSha256: current.packageSha256,
+      deviceIdHash,
+      expectation: expectation(current),
+    }),
+    (error) => error.code === "recovery-storage-unavailable",
+  );
+  storage.failWrites = false;
+  assert.deepEqual(store.readMarker(), verificationMarker);
 });
 
 test("offline selection restores the newest complete validated package", async () => {

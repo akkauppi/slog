@@ -79,7 +79,8 @@ async function fixture(sourceCommit = "0123456789abcdef0123456789abcdef01234567"
   return {
     contents,
     manifest: {
-      schema_version: 1,
+      schema_version: 2,
+      commissioning_protocol: 1,
       product: "sauna_logger",
       release: { version: "0.3.0-dev", source_commit: sourceCommit },
       target: {
@@ -139,10 +140,49 @@ test("metadata and preservation policy fail before any image load", async () => 
   assert.equal(counters.loads ?? 0, 0);
 });
 
+test("legacy or incompatible commissioning protocols fail before image or serial access", async () => {
+  const { manifest, contents } = await fixture();
+  const legacy = structuredClone(manifest);
+  legacy.schema_version = 1;
+  delete legacy.commissioning_protocol;
+  const incompatible = structuredClone(manifest);
+  incompatible.commissioning_protocol = 2;
+
+  for (const candidate of [legacy, incompatible]) {
+    const counters = {};
+    const adapter = fakeAdapter();
+    let requests = 0;
+    const controller = new BrowserFlashController({
+      adapter,
+      requestPort: async () => { requests += 1; return {}; },
+    });
+    await assert.rejects(
+      controller.prepare(candidate, await prepareOptions(contents, counters)),
+      (error) => error.code === "manifest-commissioning-protocol-unsupported",
+    );
+    assert.equal(counters.loads ?? 0, 0);
+    assert.equal(requests, 0);
+    assert.deepEqual(adapter.calls, []);
+  }
+});
+
+test("legacy schema is accepted only for an explicit interrupted-write recovery", async () => {
+  const { manifest, contents } = await fixture();
+  manifest.schema_version = 1;
+  delete manifest.commissioning_protocol;
+  const prepared = await prepareFirmwarePackage(manifest, {
+    ...(await prepareOptions(contents)),
+    allowLegacyWriteRecovery: true,
+  });
+  assert.equal(prepared.manifest.schema_version, 1);
+  assert.equal(prepared.legacyWriteRecovery, true);
+});
+
 test("manifest rejects every target, layout, path, and write-range deviation", async () => {
   const { manifest } = await fixture();
   const cases = [
-    ["schema", (value) => { value.schema_version = 2; }],
+    ["schema", (value) => { value.schema_version = 3; }],
+    ["commissioning protocol", (value) => { value.commissioning_protocol = 2; }],
     ["product", (value) => { value.product = "another_product"; }],
     ["chip", (value) => { value.target.chip = "ESP32-S3"; }],
     ["board", (value) => { value.target.board = "generic_esp32c3"; }],
@@ -259,6 +299,37 @@ test("controller validates before requesting a port and closes before commission
   assert.deepEqual(adapter.calls.map(([name]) => name), ["connect", "write", "reset", "close"]);
   assert.equal(progress.at(-1).fileIndex, 4);
   assert.equal(progress.at(-1).overallWritten, progress.at(-1).overallTotal);
+});
+
+test("before-write gate runs after preflight and can still prevent every write", async () => {
+  const adapter = fakeAdapter();
+  const { controller } = await preparedController(adapter);
+  await controller.connect();
+  const order = [];
+  await controller.flash({
+    beforeWrite: ({ packageSha256, deviceIdHash }) => {
+      order.push("gate");
+      assert.equal(packageSha256, controller.snapshot.prepared.packageSha256);
+      assert.equal(deviceIdHash, DEVICE_A);
+      assert.equal(controller.snapshot.phase, FlashPhase.READY_TO_FLASH);
+      assert.equal(controller.snapshot.canCancel, true);
+      assert.equal(adapter.calls.some(([name]) => name === "write"), false);
+    },
+  });
+  order.push("complete");
+  assert.deepEqual(order, ["gate", "complete"]);
+
+  const blockedAdapter = fakeAdapter();
+  const blocked = (await preparedController(blockedAdapter)).controller;
+  await blocked.connect();
+  const gateError = new Error("durable marker unavailable");
+  await assert.rejects(
+    blocked.flash({ beforeWrite: () => { throw gateError; } }),
+    (error) => error === gateError,
+  );
+  assert.equal(blockedAdapter.calls.some(([name]) => name === "write"), false);
+  assert.equal(blocked.snapshot.phase, FlashPhase.READY_TO_FLASH);
+  assert.equal(blocked.snapshot.canCancel, true);
 });
 
 test("pre-write cancel hard-resets and closes, and cancel is forbidden after write starts", async () => {

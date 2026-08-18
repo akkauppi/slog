@@ -12,6 +12,7 @@ export const GEOMETRY_ID = "column8_20cm_v1";
 export const MINIMUM_RISE_C = 3.0;
 export const WINNER_MARGIN_C = 1.0;
 export const MAXIMUM_LINE_LENGTH = 512;
+export const LEGACY_INCOMPATIBLE_FIRMWARE = "legacy-incompatible-firmware";
 
 const MESSAGE_NAME = /^[A-Z][A-Z0-9_]*$/;
 const FIELD_NAME = /^[a-z][a-z0-9_]*$/;
@@ -20,9 +21,11 @@ const CRC32_TEXT = /^[0-9A-Fa-f]{8}$/;
 const FLOAT_TEXT = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
 
 export class ProtocolError extends Error {
-  constructor(message, options) {
-    super(message, options);
+  constructor(message, options = {}) {
+    const { code, ...errorOptions } = options ?? {};
+    super(message, errorOptions);
     this.name = "ProtocolError";
+    if (code !== undefined) this.code = code;
   }
 }
 

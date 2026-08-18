@@ -17,6 +17,9 @@ const FILE_POLICY = Object.freeze([
 ]);
 
 const PROTECTED_PARTITIONS = new Set(["nvs", "app1", "spiffs", "coredump"]);
+export const FIRMWARE_MANIFEST_SCHEMA_VERSION = 2;
+export const FIRMWARE_COMMISSIONING_PROTOCOL = 1;
+const LEGACY_FIRMWARE_MANIFEST_SCHEMA_VERSION = 1;
 const RELEASE_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
 // Public bundle generation permits only a clean full commit. The browser also
 // accepts an explicitly labelled local development build so the same guarded
@@ -115,7 +118,7 @@ function rangesOverlap(leftStart, leftEnd, rightStart, rightEnd) {
 }
 
 function cloneManifest(manifest) {
-  return {
+  const cloned = {
     schema_version: manifest.schema_version,
     product: manifest.product,
     release: { ...manifest.release },
@@ -123,12 +126,44 @@ function cloneManifest(manifest) {
     partitions: manifest.partitions.map((partition) => ({ ...partition })),
     files: manifest.files.map((file) => ({ ...file })),
   };
+  if (Object.hasOwn(manifest, "commissioning_protocol")) {
+    cloned.commissioning_protocol = manifest.commissioning_protocol;
+  }
+  return cloned;
 }
 
-export function validateFirmwareManifest(manifest) {
-  requireExactKeys(manifest, ["schema_version", "product", "release", "target", "partitions", "files"], "manifest");
-  if (manifest.schema_version !== 1) {
-    fail("manifest-schema-unsupported", "only firmware manifest schema version 1 is supported");
+export function validateFirmwareManifest(
+  manifest,
+  { allowLegacyWriteRecovery = false } = {},
+) {
+  const legacy = manifest?.schema_version === LEGACY_FIRMWARE_MANIFEST_SCHEMA_VERSION;
+  requireExactKeys(
+    manifest,
+    legacy
+      ? ["schema_version", "product", "release", "target", "partitions", "files"]
+      : ["schema_version", "commissioning_protocol", "product", "release", "target", "partitions", "files"],
+    "manifest",
+  );
+  if (legacy && !allowLegacyWriteRecovery) {
+    fail(
+      "manifest-commissioning-protocol-unsupported",
+      "legacy firmware does not declare the commissioning protocol required by this portal",
+    );
+  }
+  if (!legacy && manifest.schema_version !== FIRMWARE_MANIFEST_SCHEMA_VERSION) {
+    fail(
+      "manifest-schema-unsupported",
+      `only firmware manifest schema version ${FIRMWARE_MANIFEST_SCHEMA_VERSION} is supported`,
+    );
+  }
+  if (
+    !legacy &&
+    manifest.commissioning_protocol !== FIRMWARE_COMMISSIONING_PROTOCOL
+  ) {
+    fail(
+      "manifest-commissioning-protocol-unsupported",
+      `firmware commissioning protocol ${String(manifest.commissioning_protocol)} is not supported`,
+    );
   }
   if (manifest.product !== "sauna_logger") {
     fail("manifest-product-mismatch", "firmware manifest names the wrong product");
@@ -414,9 +449,16 @@ async function checkedDigest(digest, data) {
 
 export async function prepareFirmwarePackage(
   manifest,
-  { manifestUrl, loadFile = fetchBinary, digest = sha256Hex } = {},
+  {
+    manifestUrl,
+    loadFile = fetchBinary,
+    digest = sha256Hex,
+    allowLegacyWriteRecovery = false,
+  } = {},
 ) {
-  const normalized = validateFirmwareManifest(manifest);
+  const normalized = validateFirmwareManifest(manifest, {
+    allowLegacyWriteRecovery,
+  });
   const base = absoluteManifestUrl(manifestUrl);
   if (typeof loadFile !== "function" || typeof digest !== "function") {
     fail("manifest-invalid", "loadFile and digest must be functions");
@@ -447,11 +489,20 @@ export async function prepareFirmwarePackage(
   }
   const identity = new TextEncoder().encode(JSON.stringify(normalized));
   const packageSha256 = await checkedDigest(digest, identity);
-  return { manifest: normalized, manifestUrl: base.href, files, packageSha256, digest };
+  return {
+    manifest: normalized,
+    manifestUrl: base.href,
+    files,
+    packageSha256,
+    digest,
+    legacyWriteRecovery: Boolean(allowLegacyWriteRecovery && normalized.schema_version === 1),
+  };
 }
 
 async function verifyPreparedPackage(prepared) {
-  validateFirmwareManifest(prepared.manifest);
+  validateFirmwareManifest(prepared.manifest, {
+    allowLegacyWriteRecovery: prepared.legacyWriteRecovery === true,
+  });
   for (const file of prepared.files) {
     if (file.data.length !== file.size) fail("image-size-mismatch", `${file.role} changed after validation`);
     if (await checkedDigest(prepared.digest, file.data) !== file.sha256) {
@@ -797,15 +848,16 @@ export class BrowserFlashController {
 
   async disconnect() { return this.cancel(); }
 
-  async flash({ onProgress = null } = {}) {
+  async flash({ onProgress = null, beforeWrite = null } = {}) {
     return this.#exclusive(async () => {
       this.#requirePhase(FlashPhase.READY_TO_FLASH);
-      return this.#performFlash(onProgress);
+      return this.#performFlash(onProgress, beforeWrite);
     });
   }
 
-  async #performFlash(onProgress) {
+  async #performFlash(onProgress, beforeWrite = null) {
     if (onProgress !== null && typeof onProgress !== "function") throw new TypeError("onProgress must be a function");
+    if (beforeWrite !== null && typeof beforeWrite !== "function") throw new TypeError("beforeWrite must be a function");
     await verifyPreparedPackage(this.#prepared);
     if (typeof this.#deviceIdHash !== "string" || !SHA256.test(this.#deviceIdHash)) {
       fail(
@@ -815,6 +867,14 @@ export class BrowserFlashController {
       );
     }
     this.#expectedRecoveryDeviceIdHash ??= this.#deviceIdHash;
+    // A recovery owner may need to atomically advance durable state only after
+    // package and target preflight, but before the first adapter write. A
+    // rejected gate is a definite pre-write failure and leaves cancellation
+    // available.
+    await beforeWrite?.({
+      packageSha256: this.#prepared.packageSha256,
+      deviceIdHash: this.#deviceIdHash,
+    });
     const overallTotal = this.#prepared.files.reduce((sum, file) => sum + file.size, 0);
     this.#progress = { fileIndex: 1, fileCount: this.#prepared.files.length, fileRole: this.#prepared.files[0].role, written: 0, total: this.#prepared.files[0].size, overallWritten: 0, overallTotal };
     this.#writeMayHaveStarted = true;

@@ -1,6 +1,6 @@
 // CI verifies this value against the content of every APP_SHELL entry. A new
 // worker must never populate the cache still owned by an active transaction.
-const APP_SHELL_REVISION = "7fe6506faba8";
+const APP_SHELL_REVISION = "595b22c8f9c3";
 const CACHE_NAME = `sauna-commissioning-${APP_SHELL_REVISION}`;
 const APP_SHELL = [
   "./",
@@ -21,6 +21,7 @@ const APP_SHELL = [
 ];
 
 const scopedUrl = (path) => new URL(path, self.registration.scope).href;
+const FIRMWARE_ROOT = scopedUrl("./generated/firmware/");
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -49,6 +50,15 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
+
+  // Firmware has its own content-addressed durable recovery cache. Never put
+  // the mutable release manifest in the app-shell cache or silently fall back
+  // to an earlier release. Immutable package files can be fetched directly;
+  // the install workflow validates and persists all four before writing.
+  if (url.href.startsWith(FIRMWARE_ROOT)) {
+    event.respondWith(fetch(request));
+    return;
+  }
 
   event.respondWith(
     (async () => {

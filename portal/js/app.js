@@ -1,5 +1,6 @@
 import {
   DeviceError,
+  LEGACY_INCOMPATIBLE_FIRMWARE,
   ProtocolError,
   requireActiveGeneration,
   requireCompatibleDevice,
@@ -623,6 +624,23 @@ async function chooseInitialLogger() {
     }
   } catch (error) {
     await closeTransport();
+    if (
+      installedFirmwareExpectation &&
+      error instanceof ProtocolError &&
+      error.code === LEGACY_INCOMPATIBLE_FIRMWARE
+    ) {
+      try {
+        await flashUi.prepareCurrentFirmwareReplacement();
+        installedFirmwareExpectation = null;
+        logActivity(
+          "Running firmware is incompatible · prepared current firmware for the same logger",
+        );
+        return;
+      } catch (replacementError) {
+        showConnect({ afterInstall: true });
+        throw replacementError;
+      }
+    }
     showConnect({ afterInstall: Boolean(installedFirmwareExpectation) });
     throw error;
   }
@@ -1479,6 +1497,7 @@ function initializeFlashUi() {
       setConnection(false);
       showConnect({ afterInstall: true });
     },
+    onShowInstall: () => setMacroStep("install"),
     onSkip: () => {
       installedFirmwareExpectation = null;
       setConnection(false);

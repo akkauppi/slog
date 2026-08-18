@@ -52,7 +52,7 @@ events while waiting for the named response frame.
 
 ```text
 > SYS INFO
-< SYS_INFO protocol=1 product=sauna_logger firmware=0.3.0-dev commit=unknown partition=sauna_ota_v1 ota=app0 configured=1 active_generation=7 restart_required=0 commissioning=0
+< SYS_INFO protocol=1 product=sauna_logger firmware=0.3.0-dev commit=unknown partition=sauna_ota_v1 ota=app0 configured=1 active_generation=7 restart_required=0 commissioning=0 compatibility=SAUNA_COMMISSIONING_PROTOCOL=1
 ```
 
 Compatibility is determined from `protocol`, `product`, `partition`, and the

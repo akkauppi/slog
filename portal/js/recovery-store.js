@@ -22,6 +22,7 @@ const REPAIRABLE_PACKAGE_ERRORS = new Set([
   "recovery-package-mismatch",
   "manifest-invalid",
   "manifest-schema-unsupported",
+  "manifest-commissioning-protocol-unsupported",
   "manifest-product-mismatch",
   "manifest-version-invalid",
   "manifest-target-mismatch",
@@ -167,7 +168,11 @@ function fileLoader(prepared) {
   };
 }
 
-async function revalidatePrepared(prepared, digest) {
+async function revalidatePrepared(
+  prepared,
+  digest,
+  { allowLegacyWriteRecovery = false } = {},
+) {
   if (!isObject(prepared) || !Array.isArray(prepared.files)) {
     fail("recovery-package-invalid", "prepared firmware package is incomplete");
   }
@@ -175,6 +180,7 @@ async function revalidatePrepared(prepared, digest) {
     manifestUrl: prepared.manifestUrl,
     digest,
     loadFile: fileLoader(prepared),
+    allowLegacyWriteRecovery,
   });
   if (validated.packageSha256 !== prepared.packageSha256) {
     fail("recovery-package-mismatch", "prepared firmware package identity changed");
@@ -454,7 +460,10 @@ export class FirmwareRecoveryStore {
     return { cache, record };
   }
 
-  async restorePreparedPackage(packageSha256) {
+  async restorePreparedPackage(
+    packageSha256,
+    { allowLegacyWriteRecovery = false } = {},
+  ) {
     requireHash(packageSha256, "firmware package identity");
     const { cache, record } = await this.#readRecord(packageSha256);
     const loaded = new Map();
@@ -485,6 +494,7 @@ export class FirmwareRecoveryStore {
       manifestUrl: record.manifestUrl,
       loadFile,
       digest: this.digest,
+      allowLegacyWriteRecovery,
     });
     if (restored.packageSha256 !== packageSha256 || loaded.size !== 4) {
       fail("recovery-package-mismatch", "cached firmware package failed identity verification");
@@ -567,6 +577,72 @@ export class FirmwareRecoveryStore {
     });
   }
 
+  async beginReplacementWrite({
+    verificationMarker,
+    packageSha256,
+    deviceIdHash,
+    expectation,
+  }) {
+    this.#requireLifecycle();
+    const previous = validateRecoveryMarker(verificationMarker);
+    if (previous.phase !== RecoveryPhase.VERIFICATION_REQUIRED) {
+      fail(
+        "recovery-phase-invalid",
+        "only a completed write awaiting runtime verification may be replaced",
+      );
+    }
+    const connectedDeviceIdHash = requireHash(
+      deviceIdHash,
+      "connected device identity",
+    );
+    if (connectedDeviceIdHash !== previous.deviceIdHash) {
+      fail(
+        "device-mismatch",
+        "the selected bootloader is not the logger awaiting verification",
+      );
+    }
+    const durable = this.readMarker();
+    if (!durable || JSON.stringify(durable) !== JSON.stringify(previous)) {
+      fail(
+        "recovery-record-conflict",
+        "the mandatory verification record changed before replacement",
+      );
+    }
+
+    // All asynchronous package work happens while the old marker remains
+    // authoritative. The final localStorage assignment is the commit point
+    // immediately before BrowserFlashController may start a write.
+    const restored = await this.restorePreparedPackage(packageSha256);
+    const normalizedExpectation = validateFirmwareExpectation(expectation);
+    if (
+      !expectationMatches(
+        normalizedExpectation,
+        expectationFromPrepared(restored),
+      )
+    ) {
+      fail(
+        "recovery-package-mismatch",
+        "replacement verification target does not match the cached package",
+      );
+    }
+    const rechecked = this.readMarker();
+    if (!rechecked || JSON.stringify(rechecked) !== JSON.stringify(previous)) {
+      fail(
+        "recovery-record-conflict",
+        "the mandatory verification record changed while replacement was checked",
+      );
+    }
+    return this.writeMarker({
+      schemaVersion: MARKER_SCHEMA_VERSION,
+      phase: RecoveryPhase.WRITE_REQUIRED,
+      packageSha256,
+      deviceIdHash: connectedDeviceIdHash,
+      expectation: normalizedExpectation,
+      startedAt: previous.startedAt,
+      updatedAt: asTimestamp(this.now),
+    });
+  }
+
   markVerificationRequired() {
     this.#requireLifecycle();
     const current = this.readMarker();
@@ -619,6 +695,10 @@ export async function restoreOrRepairRecoveryPackage({
   try {
     restored = await store.restorePreparedPackage(
       normalizedMarker.packageSha256,
+      {
+        allowLegacyWriteRecovery:
+          normalizedMarker.phase === RecoveryPhase.WRITE_REQUIRED,
+      },
     );
   } catch (error) {
     if (!REPAIRABLE_PACKAGE_ERRORS.has(String(error?.code ?? ""))) throw error;

@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+COMMISSIONING_PROTOCOL = 1
+COMMISSIONING_PROTOCOL_SENTINEL = b"SAUNA_COMMISSIONING_PROTOCOL=1"
 PRODUCT = "sauna_logger"
 CHIP = "ESP32-C3"
 CHIP_ARGUMENT = "esp32c3"
@@ -487,12 +489,72 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _package_id(manifest: dict[str, object]) -> str:
+    """Return a deterministic identity before paths gain their package prefix.
+
+    The browser's package identity includes the final URLs.  This separate
+    publication identity exists only to name an immutable directory and commits
+    to the complete validated manifest plus every image digest.
+    """
+    canonical = json.dumps(
+        manifest,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(b"sauna-web-flash-package-v1\0" + canonical).hexdigest()
+
+
+def _verify_existing_package(staging: Path, published: Path) -> None:
+    """Fail closed if a content-addressed destination is not byte-identical."""
+    expected = {path.name for path in staging.iterdir()}
+    try:
+        actual = {path.name for path in published.iterdir()}
+    except OSError as error:
+        raise BundleError(f"could not inspect published firmware package: {published}") from error
+    if actual != expected:
+        raise BundleError("published firmware package identity collision")
+    for name in sorted(expected):
+        source = staging / name
+        destination = published / name
+        if destination.is_symlink() or not destination.is_file():
+            raise BundleError("published firmware package contains an unsafe file")
+        if source.stat().st_size != destination.stat().st_size:
+            raise BundleError("published firmware package identity collision")
+        if _sha256(source) != _sha256(destination):
+            raise BundleError("published firmware package identity collision")
+
+
+def _atomic_write(path: Path, contents: bytes) -> None:
+    """Commit one complete file without exposing a truncated replacement."""
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(raw_temporary)
+    try:
+        with os.fdopen(descriptor, "wb") as destination:
+            destination.write(contents)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _ensure_compiled_identity(application: Path, metadata: dict[str, object]) -> None:
     contents = application.read_bytes()
     for field in ("firmware_version", "source_commit"):
         value = str(metadata[field]).encode("ascii")
         if value not in contents:
             raise BundleError(f"application binary does not contain compiled {field}")
+    if COMMISSIONING_PROTOCOL_SENTINEL not in contents:
+        raise BundleError(
+            "application binary does not contain the required commissioning "
+            "protocol sentinel"
+        )
 
 
 def build_bundle(
@@ -521,6 +583,7 @@ def build_bundle(
 
     manifest: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
+        "commissioning_protocol": COMMISSIONING_PROTOCOL,
         "product": PRODUCT,
         "release": {
             "version": metadata["firmware_version"],
@@ -539,10 +602,10 @@ def build_bundle(
     }
 
     output_dir = output_dir.resolve()
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=f".{output_dir.name}-", dir=output_dir.parent
-    ) as temporary:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    packages_dir = output_dir / "packages"
+    packages_dir.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".package-", dir=packages_dir) as temporary:
         staging = Path(temporary)
         manifest_files: list[dict[str, object]] = []
         for image in images:
@@ -558,14 +621,31 @@ def build_bundle(
                 }
             )
         manifest["files"] = manifest_files
-        (staging / "manifest.json").write_text(
-            f"{json.dumps(manifest, indent=2, ensure_ascii=True)}\n",
-            encoding="utf-8",
-        )
+        package_id = _package_id(manifest)
+        for image in manifest_files:
+            image["path"] = f"./packages/{package_id}/{image['path'][2:]}"
 
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-        shutil.copytree(staging, output_dir)
+        published = packages_dir / package_id
+        if published.exists():
+            if not published.is_dir() or published.is_symlink():
+                raise BundleError("published firmware package path is unsafe")
+            _verify_existing_package(staging, published)
+        else:
+            try:
+                os.replace(staging, published)
+            except OSError as error:
+                # Another generator may have published the same immutable
+                # package between the existence check and rename.
+                if not published.is_dir() or published.is_symlink():
+                    raise BundleError("could not publish immutable firmware package") from error
+                _verify_existing_package(staging, published)
+
+        manifest_contents = (
+            f"{json.dumps(manifest, indent=2, ensure_ascii=True)}\n"
+        ).encode("ascii")
+        # This is the sole mutable pointer. It changes only after every image
+        # is visible at its immutable path, and replacement is atomic.
+        _atomic_write(output_dir / "manifest.json", manifest_contents)
     return manifest
 
 

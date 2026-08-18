@@ -16,6 +16,7 @@ import build_web_flash_bundle as bundle
 
 VERSION = "0.3.0-dev"
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+PROTOCOL_SENTINEL = b"SAUNA_COMMISSIONING_PROTOCOL=1"
 
 
 def partition_binary() -> bytes:
@@ -59,7 +60,12 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path]:
     (build_dir / "partitions.bin").write_bytes(partition_binary())
     (build_dir / "ota_data_initial.bin").write_bytes(b"\xff" * 0x2000)
     (build_dir / "firmware.bin").write_bytes(
-        b"application\0" + VERSION.encode("ascii") + b"\0" + SOURCE_COMMIT.encode("ascii")
+        b"application\0"
+        + VERSION.encode("ascii")
+        + b"\0"
+        + SOURCE_COMMIT.encode("ascii")
+        + b"\0"
+        + PROTOCOL_SENTINEL
     )
     arguments = {
         "flash_settings": {
@@ -126,7 +132,8 @@ class BundleTests(unittest.TestCase):
     def test_builds_exact_deterministic_bundle(self):
         manifest = self.build()
         first_manifest = (self.output_dir / "manifest.json").read_bytes()
-        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["commissioning_protocol"], 1)
         self.assertEqual(manifest["product"], "sauna_logger")
         self.assertEqual(
             manifest["release"],
@@ -151,13 +158,20 @@ class BundleTests(unittest.TestCase):
             [image["role"] for image in manifest["files"]],
             ["bootloader", "partition_table", "ota_data", "application"],
         )
+        package_prefixes = {
+            "/".join(image["path"].split("/")[:3])
+            for image in manifest["files"]
+        }
+        self.assertEqual(len(package_prefixes), 1)
+        package_prefix = package_prefixes.pop()
+        self.assertRegex(package_prefix, r"^\./packages/[0-9a-f]{64}$")
         self.assertEqual(
             [image["path"] for image in manifest["files"]],
             [
-                "./bootloader.bin",
-                "./partitions.bin",
-                "./ota_data_initial.bin",
-                "./firmware.bin",
+                f"{package_prefix}/bootloader.bin",
+                f"{package_prefix}/partitions.bin",
+                f"{package_prefix}/ota_data_initial.bin",
+                f"{package_prefix}/firmware.bin",
             ],
         )
         self.assertEqual(
@@ -170,8 +184,11 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(image["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
         self.assertEqual(
             {path.name for path in self.output_dir.iterdir()},
+            {"manifest.json", "packages"},
+        )
+        self.assertEqual(
+            {path.name for path in (self.output_dir / package_prefix[2:]).iterdir()},
             {
-                "manifest.json",
                 "bootloader.bin",
                 "partitions.bin",
                 "ota_data_initial.bin",
@@ -181,6 +198,82 @@ class BundleTests(unittest.TestCase):
 
         self.build()
         self.assertEqual((self.output_dir / "manifest.json").read_bytes(), first_manifest)
+        self.assertEqual(len(list((self.output_dir / "packages").iterdir())), 1)
+
+    def test_new_publish_preserves_every_file_referenced_by_old_manifest(self):
+        first = self.build()
+        first_contents = {
+            image["path"]: (self.output_dir / image["path"][2:]).read_bytes()
+            for image in first["files"]
+        }
+
+        metadata_path = self.build_dir / "sauna_build_metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["firmware_version"] = "0.3.1-dev"
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+        (self.build_dir / "firmware.bin").write_bytes(
+            b"new application\0"
+            + b"0.3.1-dev\0"
+            + SOURCE_COMMIT.encode("ascii")
+            + b"\0"
+            + PROTOCOL_SENTINEL
+        )
+        second = self.build()
+
+        self.assertNotEqual(first["files"][0]["path"], second["files"][0]["path"])
+        for path, contents in first_contents.items():
+            self.assertEqual((self.output_dir / path[2:]).read_bytes(), contents)
+        self.assertEqual(len(list((self.output_dir / "packages").iterdir())), 2)
+
+    def test_failed_image_copy_keeps_published_manifest_and_package(self):
+        first = self.build()
+        manifest_before = (self.output_dir / "manifest.json").read_bytes()
+        package_before = {
+            image["path"]: (self.output_dir / image["path"][2:]).read_bytes()
+            for image in first["files"]
+        }
+        original_copy = bundle.shutil.copyfile
+        calls = 0
+
+        def interrupted_copy(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated interrupted copy")
+            return original_copy(source, destination)
+
+        with mock.patch.object(bundle.shutil, "copyfile", side_effect=interrupted_copy):
+            with self.assertRaisesRegex(OSError, "simulated interrupted copy"):
+                self.build()
+
+        self.assertEqual((self.output_dir / "manifest.json").read_bytes(), manifest_before)
+        for path, contents in package_before.items():
+            self.assertEqual((self.output_dir / path[2:]).read_bytes(), contents)
+        self.assertFalse(
+            any(path.name.startswith(".package-") for path in (self.output_dir / "packages").iterdir())
+        )
+
+    def test_failed_manifest_switch_keeps_previous_manifest_complete(self):
+        first = self.build()
+        manifest_path = self.output_dir / "manifest.json"
+        manifest_before = manifest_path.read_bytes()
+        original_replace = bundle.os.replace
+
+        def interrupted_replace(source, destination):
+            if Path(destination) == manifest_path:
+                raise OSError("simulated manifest switch failure")
+            return original_replace(source, destination)
+
+        with mock.patch.object(bundle.os, "replace", side_effect=interrupted_replace):
+            with self.assertRaisesRegex(OSError, "simulated manifest switch failure"):
+                self.build()
+
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+        for image in first["files"]:
+            self.assertTrue((self.output_dir / image["path"][2:]).is_file())
+        self.assertFalse(
+            any(path.name.startswith(".manifest.json-") for path in self.output_dir.iterdir())
+        )
 
     def test_rejects_corrupt_partition_binary_checksum(self):
         contents = bytearray((self.build_dir / "partitions.bin").read_bytes())
@@ -252,6 +345,16 @@ class BundleTests(unittest.TestCase):
     def test_rejects_release_metadata_not_compiled_into_application(self):
         (self.build_dir / "firmware.bin").write_bytes(b"no release identity")
         with self.assertRaisesRegex(bundle.BundleError, "compiled firmware_version"):
+            self.build()
+
+    def test_rejects_application_without_commissioning_protocol_sentinel(self):
+        (self.build_dir / "firmware.bin").write_bytes(
+            b"application\0"
+            + VERSION.encode("ascii")
+            + b"\0"
+            + SOURCE_COMMIT.encode("ascii")
+        )
+        with self.assertRaisesRegex(bundle.BundleError, "commissioning protocol sentinel"):
             self.build()
 
     def test_public_metadata_rejects_dirty_or_unknown_commit(self):
