@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,11 +21,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build and analysis dependencies
+        run: >-
+          python -m pip install
+          "platformio==6.1.19"
+          -r requirements-analysis.txt
       - run: npm test
+      - name: Test firmware and bundle tooling
+        run: python -m unittest discover -s tests -v
+      - name: Build validated firmware package
+        env:
+          SAUNA_SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python tools/build_web_flash_bundle.py
+          --build
+          --require-release-metadata
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: portal
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,10 +58,5 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: portal
       - id: deployment
         uses: actions/deploy-pages@v4
