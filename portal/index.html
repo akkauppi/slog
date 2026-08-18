@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#171717">
+    <meta
+      name="description"
+      content="Commission the eight temperature probes on a sauna logger over USB."
+    >
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self'; manifest-src 'self'"
+    >
+    <title>Probe setup · Sauna logger</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./js/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to setup</a>
+
+    <header class="site-header">
+      <div class="site-header__inner">
+        <div class="identity" aria-label="Sauna logger probe setup">
+          <span class="identity__product">Sauna logger</span>
+          <span class="identity__separator" aria-hidden="true">/</span>
+          <span class="identity__section">Probe setup</span>
+        </div>
+        <div class="connection">
+          <span
+            class="connection__state"
+            id="connection-state"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <span class="state-mark" aria-hidden="true"></span>
+            Not connected
+          </span>
+          <button class="button button--quiet" id="disconnect-button" type="button" hidden>
+            Disconnect
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main" class="page">
+      <section class="page-intro" aria-labelledby="page-title">
+        <p class="section-label">USB commissioning utility</p>
+        <h1 id="page-title">Commission eight temperature probes</h1>
+        <p>
+          Assign each physical probe to its fixed height, store the map on the
+          logger, and verify it after restart. Probe identity comes from its
+          DS18B20 address, never the order in which the bus reports it.
+        </p>
+      </section>
+
+      <noscript>
+        <section class="message message--error" role="alert">
+          JavaScript is required to communicate with the logger over USB.
+        </section>
+      </noscript>
+
+      <section class="message" id="environment-message" role="status" hidden></section>
+
+      <div class="workspace">
+        <nav class="progress" aria-label="Commissioning progress">
+          <p class="section-label">Process</p>
+          <ol class="progress__list" id="progress-list">
+            <li data-step="connect" aria-current="step">
+              <span class="progress__number">01</span>
+              <span>Connect</span>
+            </li>
+            <li data-step="prepare">
+              <span class="progress__number">02</span>
+              <span>Prepare</span>
+            </li>
+            <li data-step="identify">
+              <span class="progress__number">03</span>
+              <span>Identify</span>
+            </li>
+            <li data-step="review">
+              <span class="progress__number">04</span>
+              <span>Review</span>
+            </li>
+            <li data-step="verify">
+              <span class="progress__number">05</span>
+              <span>Verify</span>
+            </li>
+          </ol>
+        </nav>
+
+        <div class="work-column">
+          <p class="mobile-progress" id="mobile-progress">Step 1 of 5</p>
+
+          <aside
+            class="transaction-notice"
+            id="transaction-notice"
+            role="status"
+            aria-live="polite"
+            hidden
+          >
+            <strong>Probe setup is open.</strong>
+            Automatic logging is paused until setup is completed or cancelled.
+            Keep this tab open.
+          </aside>
+
+          <section class="task" aria-labelledby="task-title">
+            <p class="section-label" id="task-kicker">Step 1 · Connect</p>
+            <h2 id="task-title" tabindex="-1">Connect the logger</h2>
+            <p class="task__description" id="task-description">
+              Use a USB data cable. Close PlatformIO, a serial monitor, or any
+              other application using the port.
+            </p>
+
+            <div class="message" id="task-message" role="status" aria-live="polite" hidden></div>
+
+            <dl class="device-summary" id="device-summary" hidden>
+              <div>
+                <dt>Logger</dt>
+                <dd id="device-product">—</dd>
+              </div>
+              <div>
+                <dt>Firmware</dt>
+                <dd id="device-firmware">—</dd>
+              </div>
+              <div>
+                <dt>Configuration</dt>
+                <dd id="device-configuration">—</dd>
+              </div>
+            </dl>
+
+            <div class="expected" id="expected-result" hidden></div>
+
+            <ol class="verification-stages" id="verification-stages" hidden>
+              <li>Sending eight positions</li>
+              <li>Writing CRC-protected map</li>
+              <li>Reading map back</li>
+              <li>Restarting logger</li>
+              <li>Verifying active generation</li>
+              <li>Checking all eight probes</li>
+            </ol>
+
+            <div class="actions">
+              <button class="button button--primary" id="primary-action" type="button">
+                Choose logger
+              </button>
+              <button class="button button--secondary" id="secondary-action" type="button" hidden></button>
+              <button class="button button--quiet" id="cancel-action" type="button" hidden>
+                Cancel setup
+              </button>
+            </div>
+
+            <p class="privacy-note" id="privacy-note">
+              Only the device you select is shared with this page. Nothing is uploaded.
+            </p>
+          </section>
+
+          <section class="probe-map" aria-labelledby="probe-map-title">
+            <div class="section-heading">
+              <div>
+                <p class="section-label">Fixed geometry</p>
+                <h2 id="probe-map-title">Probe order</h2>
+              </div>
+              <p id="probe-count">0 of 8 identified</p>
+            </div>
+
+            <div class="orientation orientation--top">
+              <span>Top</span>
+              <span>Away from logger</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Probe</th>
+                    <th scope="col">Relative position</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Temperature</th>
+                    <th scope="col">ROM address</th>
+                  </tr>
+                </thead>
+                <tbody id="probe-table-body"></tbody>
+              </table>
+            </div>
+            <div class="orientation orientation--bottom">
+              <span>Bottom</span>
+              <span>Next to logger</span>
+            </div>
+          </section>
+
+          <details class="technical" id="technical-details">
+            <summary>Technical details</summary>
+            <dl class="technical__grid">
+              <div><dt>Protocol</dt><dd id="detail-protocol">—</dd></div>
+              <div><dt>Source commit</dt><dd id="detail-commit">—</dd></div>
+              <div><dt>OTA slot</dt><dd id="detail-ota">—</dd></div>
+              <div><dt>Generation</dt><dd id="detail-generation">—</dd></div>
+              <div><dt>Configuration CRC</dt><dd id="detail-crc">—</dd></div>
+              <div><dt>USB device</dt><dd id="detail-usb">—</dd></div>
+            </dl>
+            <div class="protocol-log">
+              <h3>Recent activity</h3>
+              <ol id="protocol-log" aria-label="Recent protocol activity"></ol>
+            </div>
+          </details>
+        </div>
+      </div>
+    </main>
+
+    <aside
+      class="update-notice"
+      id="update-notice"
+      role="status"
+      aria-live="polite"
+      hidden
+    >
+      <p>A portal update is ready. Finish or cancel probe setup before reloading.</p>
+      <button class="button button--secondary" id="update-action" type="button" disabled>
+        Reload update
+      </button>
+    </aside>
+
+    <footer class="site-footer">
+      <p>Runs locally in your browser. Serial data and probe addresses are not uploaded.</p>
+      <p>Desktop Chrome or Edge · Web Serial · 115200 baud</p>
+    </footer>
+
+    <dialog id="write-dialog" aria-labelledby="write-dialog-title">
+      <form method="dialog">
+        <p class="section-label">Final check</p>
+        <h2 id="write-dialog-title">Write this probe map?</h2>
+        <p>
+          The logger will store this order, read it back, and restart. Existing
+          sauna records are not changed.
+        </p>
+        <div class="actions">
+          <button class="button button--secondary" value="cancel">Back</button>
+          <button class="button button--primary" id="confirm-write" value="confirm">
+            Write and restart
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

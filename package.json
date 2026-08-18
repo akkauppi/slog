@@ -1,0 +1,9 @@
+{
+  "name": "sauna-logger-portal",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/portal/*.test.js",
+    "test:portal": "node --test tests/portal/*.test.js"
+  }
+}
