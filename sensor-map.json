@@ -1,6 +1,8 @@
 {
+  "schema_version": 1,
   "device": "sauna-column-1",
   "one_wire_pin": "D2",
+  "geometry": "column8_20cm_v1",
   "reference_end": "opposite_esp32",
   "position_direction": "toward_esp32",
   "installation_order": "top_to_bottom",
@@ -9,42 +11,42 @@
   "sensors": [
     {
       "position_from_reference_end": 1,
-      "height_relative_to_probe_1_cm": 0,
+      "relative_height_cm": 0,
       "rom": "2825E1BD00000058"
     },
     {
       "position_from_reference_end": 2,
-      "height_relative_to_probe_1_cm": -20,
+      "relative_height_cm": -20,
       "rom": "2856BE530000003F"
     },
     {
       "position_from_reference_end": 3,
-      "height_relative_to_probe_1_cm": -40,
+      "relative_height_cm": -40,
       "rom": "287C38C000000078"
     },
     {
       "position_from_reference_end": 4,
-      "height_relative_to_probe_1_cm": -60,
+      "relative_height_cm": -60,
       "rom": "28D92E50000000CE"
     },
     {
       "position_from_reference_end": 5,
-      "height_relative_to_probe_1_cm": -80,
+      "relative_height_cm": -80,
       "rom": "289ABC52000000D1"
     },
     {
       "position_from_reference_end": 6,
-      "height_relative_to_probe_1_cm": -100,
+      "relative_height_cm": -100,
       "rom": "28CD19520000009B"
     },
     {
       "position_from_reference_end": 7,
-      "height_relative_to_probe_1_cm": -120,
+      "relative_height_cm": -120,
       "rom": "28939352000000D0"
     },
     {
       "position_from_reference_end": 8,
-      "height_relative_to_probe_1_cm": -140,
+      "relative_height_cm": -140,
       "rom": "2801F3520000001E"
     }
   ]

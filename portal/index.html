@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#171717">
+    <meta
+      name="description"
+      content="Prepare a sauna logger, save its records, and analyze measurements locally."
+    >
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self'; manifest-src 'self'"
+    >
+    <title>Sauna logger · Local portal</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./js/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="site-header__inner">
+        <div class="identity" aria-label="Sauna logger local portal">
+          <span class="identity__product">Sauna logger</span>
+          <span class="identity__separator" aria-hidden="true">/</span>
+          <span class="identity__section">Local portal</span>
+        </div>
+        <nav class="view-nav" aria-label="Portal sections">
+          <button type="button" data-portal-view="prepare" aria-controls="prepare-view" aria-current="page">
+            Prepare
+          </button>
+          <button type="button" data-portal-view="records" aria-controls="records-view">
+            Records
+          </button>
+          <button type="button" data-portal-view="analyze" aria-controls="analyze-view">
+            Analyze
+          </button>
+        </nav>
+        <div class="connection">
+          <span
+            class="connection__state"
+            id="connection-state"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <span class="state-mark" aria-hidden="true"></span>
+            Not connected
+          </span>
+          <button class="button button--quiet" id="disconnect-button" type="button" hidden>
+            Disconnect
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main" class="page">
+      <div class="portal-view" id="prepare-view" data-view="prepare">
+      <section class="page-intro" aria-labelledby="page-title">
+        <p class="section-label">Local USB utility</p>
+        <h1 id="page-title" tabindex="-1">Prepare a sauna logger</h1>
+        <p>
+          Install the firmware, verify the logger, and assign its eight
+          temperature probes. Everything stays in this browser.
+        </p>
+      </section>
+
+      <noscript>
+        <section class="message message--error" role="alert">
+          JavaScript is required to communicate with the logger over USB.
+        </section>
+      </noscript>
+
+      <section class="message" id="environment-message" role="status" hidden></section>
+
+      <div class="workspace">
+        <nav class="progress" aria-label="Logger preparation progress">
+          <p class="section-label">Process</p>
+          <ol class="progress__list" id="macro-progress-list">
+            <li data-macro-step="install" aria-current="step">
+              <span class="progress__number">01</span>
+              <span>Install firmware</span>
+            </li>
+            <li data-macro-step="verify">
+              <span class="progress__number">02</span>
+              <span>Verify logger</span>
+            </li>
+            <li data-macro-step="commission">
+              <span class="progress__number">03</span>
+              <span>Set up probes</span>
+            </li>
+          </ol>
+        </nav>
+
+        <div class="work-column">
+          <p class="mobile-progress" id="mobile-macro-progress">Stage 1 of 3</p>
+
+          <section class="task" id="install-task" aria-labelledby="install-title">
+            <p class="section-label" id="install-kicker">Stage 1 · Install firmware</p>
+            <h2 id="install-title" tabindex="-1">Install the project firmware</h2>
+            <p class="task__description" id="install-description">
+              Put the XIAO ESP32-C3 into BOOT mode, choose it in the browser,
+              then review the bundled release before anything is written.
+            </p>
+
+            <div
+              class="message"
+              id="install-message"
+              role="status"
+              aria-live="polite"
+              hidden
+            ></div>
+
+            <ol class="boot-instructions" id="boot-instructions">
+              <li>
+                <strong>Disconnect USB.</strong>
+                Leave the probes and other wiring undisturbed.
+              </li>
+              <li>
+                <strong>Hold BOOT and reconnect USB.</strong>
+                Release BOOT after the computer detects the board.
+              </li>
+              <li>
+                <strong>Choose the bootloader port.</strong>
+                Close PlatformIO or any serial monitor first.
+              </li>
+            </ol>
+
+            <dl class="firmware-summary" id="firmware-summary" hidden>
+              <div>
+                <dt>Release</dt>
+                <dd id="install-release">—</dd>
+              </div>
+              <div>
+                <dt>Target</dt>
+                <dd id="install-target">—</dd>
+              </div>
+              <div>
+                <dt>Manifest</dt>
+                <dd id="install-manifest">—</dd>
+              </div>
+              <div>
+                <dt>Image integrity</dt>
+                <dd id="install-hash">—</dd>
+              </div>
+            </dl>
+
+            <ol class="installation-stages" id="installation-stages" hidden>
+              <li>Validate manifest and image hashes</li>
+              <li>Prepare the ESP32-C3 bootloader</li>
+              <li>Write firmware</li>
+              <li>Verify the written image</li>
+            </ol>
+            <p
+              class="install-progress-detail"
+              id="install-progress-detail"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              hidden
+            ></p>
+
+            <div class="actions">
+              <button class="button button--primary" id="install-primary" type="button">
+                Choose bootloader device
+              </button>
+              <button class="button button--secondary" id="install-secondary" type="button">
+                Firmware already installed
+              </button>
+              <button class="button button--quiet" id="install-tertiary" type="button" hidden></button>
+            </div>
+
+            <p class="privacy-note" id="install-note">
+              The portal accepts only its versioned release manifest and
+              SHA-256-verified image set. There is no file picker or erase option.
+            </p>
+          </section>
+
+          <section id="commissioning-workflow" hidden>
+            <nav class="commission-progress" aria-label="Probe setup progress">
+              <p class="section-label">Probe setup</p>
+              <ol id="progress-list">
+                <li data-step="connect" aria-current="step"><span>Connect</span></li>
+                <li data-step="prepare"><span>Prepare</span></li>
+                <li data-step="identify"><span>Identify</span></li>
+                <li data-step="review"><span>Review</span></li>
+                <li data-step="verify"><span>Verify</span></li>
+              </ol>
+              <p class="commission-progress__mobile" id="mobile-progress">Probe setup · Step 1 of 5</p>
+            </nav>
+
+            <aside
+              class="transaction-notice"
+              id="transaction-notice"
+              role="status"
+              aria-live="polite"
+              hidden
+            >
+              <strong>Probe setup is open.</strong>
+              Automatic logging is paused until setup is completed or cancelled.
+              Keep this tab open.
+            </aside>
+
+            <section class="task" id="commission-task" aria-labelledby="task-title">
+              <p class="section-label" id="task-kicker">Probe setup · Connect</p>
+              <h2 id="task-title" tabindex="-1">Connect the running logger</h2>
+              <p class="task__description" id="task-description">
+                Reset into the installed firmware, then choose the serial port
+                that reappears.
+              </p>
+
+              <div class="message" id="task-message" role="status" aria-live="polite" hidden></div>
+
+              <dl class="device-summary" id="device-summary" hidden>
+                <div><dt>Logger</dt><dd id="device-product">—</dd></div>
+                <div><dt>Firmware</dt><dd id="device-firmware">—</dd></div>
+                <div><dt>Configuration</dt><dd id="device-configuration">—</dd></div>
+              </dl>
+
+              <div class="expected" id="expected-result" hidden></div>
+
+              <ol class="verification-stages" id="verification-stages" hidden>
+                <li>Sending eight positions</li>
+                <li>Writing CRC-protected map</li>
+                <li>Reading map back</li>
+                <li>Restarting logger</li>
+                <li>Verifying active generation</li>
+                <li>Checking all eight probes</li>
+              </ol>
+
+              <div class="actions">
+                <button class="button button--primary" id="primary-action" type="button">
+                  Choose logger
+                </button>
+                <button class="button button--secondary" id="secondary-action" type="button" hidden></button>
+                <button class="button button--quiet" id="cancel-action" type="button" hidden>
+                  Cancel setup
+                </button>
+              </div>
+
+              <p class="privacy-note" id="privacy-note">
+                Only the device you select is shared with this page. Nothing is uploaded.
+              </p>
+            </section>
+
+            <section class="probe-map" aria-labelledby="probe-map-title">
+              <div class="section-heading">
+                <div>
+                  <p class="section-label">Fixed geometry</p>
+                  <h2 id="probe-map-title">Probe order</h2>
+                </div>
+                <p id="probe-count">0 of 8 identified</p>
+              </div>
+
+              <div class="orientation orientation--top">
+                <span>Top</span>
+                <span>Away from logger</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Probe</th>
+                      <th scope="col">Relative position</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Temperature</th>
+                      <th scope="col">ROM address</th>
+                    </tr>
+                  </thead>
+                  <tbody id="probe-table-body"></tbody>
+                </table>
+              </div>
+              <div class="orientation orientation--bottom">
+                <span>Bottom</span>
+                <span>Next to logger</span>
+              </div>
+            </section>
+          </section>
+
+          <details class="technical" id="technical-details">
+            <summary>Technical details</summary>
+            <p class="technical__intro">
+              Device and probe details for troubleshooting. The read-only USB
+              transcript is in Diagnostics at the bottom of the page.
+            </p>
+            <dl class="technical__grid">
+              <div><dt>Protocol</dt><dd id="detail-protocol">—</dd></div>
+              <div><dt>Source commit</dt><dd id="detail-commit">—</dd></div>
+              <div><dt>OTA slot</dt><dd id="detail-ota">—</dd></div>
+              <div><dt>Generation</dt><dd id="detail-generation">—</dd></div>
+              <div><dt>Configuration CRC</dt><dd id="detail-crc">—</dd></div>
+              <div><dt>USB device</dt><dd id="detail-usb">—</dd></div>
+            </dl>
+          </details>
+        </div>
+      </div>
+      </div>
+
+      <section class="portal-view data-view" id="records-view" data-view="records" aria-labelledby="records-title" hidden>
+        <div class="page-intro page-intro--compact">
+          <p class="section-label">Local USB records</p>
+          <h1 id="records-title" tabindex="-1">Stored sauna records</h1>
+          <p>
+            Download CRC-checked raw files from the logger. Save and verify is
+            safest; if the browser cannot verify a saved file, an explicit
+            removal override is available.
+          </p>
+        </div>
+
+        <div class="message" id="records-message" role="status" aria-live="polite" hidden></div>
+
+        <section class="data-section" aria-labelledby="storage-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-label">Logger</p>
+              <h2 id="storage-title">Storage status</h2>
+            </div>
+            <p id="records-device-identity">Not connected</p>
+          </div>
+          <dl class="storage-summary" id="storage-summary" hidden>
+            <div><dt>Recording</dt><dd id="records-active">&mdash;</dd></div>
+            <div><dt>Storage</dt><dd id="records-storage">&mdash;</dd></div>
+            <div><dt>12-hour reserve</dt><dd id="records-reserve">&mdash;</dd></div>
+            <div><dt>Retention</dt><dd id="records-retention">&mdash;</dd></div>
+          </dl>
+          <p class="retention-note" id="records-retention-note" hidden></p>
+          <div class="actions">
+            <button class="button button--primary" id="records-connect" type="button">Choose logger</button>
+            <button class="button button--secondary" id="records-refresh" type="button" hidden>Refresh records</button>
+          </div>
+          <p class="privacy-note">
+            The portal checks the firmware before reading records. Downloads
+            pause while a recording is active. Nothing is uploaded.
+          </p>
+        </section>
+
+        <section class="data-section" aria-labelledby="catalog-title">
+          <div class="section-heading">
+            <div>
+              <p class="section-label">Files on logger</p>
+              <h2 id="catalog-title">Sauna runs</h2>
+            </div>
+            <p id="records-count">No file list loaded</p>
+          </div>
+          <div id="records-catalog" class="records-catalog">
+            <p class="empty-state">Connect a logger to inspect its records.</p>
+          </div>
+        </section>
+      </section>
+
+      <section class="portal-view data-view" id="analyze-view" data-view="analyze" aria-labelledby="analyze-title" hidden>
+        <div class="page-intro page-intro--compact">
+          <p class="section-label">Offline analysis</p>
+          <h1 id="analyze-title" tabindex="-1">Analyze sauna sessions</h1>
+          <p>
+            Open one or more <code>.slog</code> files to view charts and export
+            session data. Time while the logger was powered off stays unknown.
+          </p>
+        </div>
+
+        <section class="data-section file-import" aria-labelledby="open-records-title">
+          <p class="section-label">Raw files</p>
+          <h2 id="open-records-title">Open session files</h2>
+          <label class="file-control" for="analysis-files">
+            <span>Choose one or more .slog files</span>
+            <input id="analysis-files" type="file" accept=".slog,application/octet-stream" multiple>
+          </label>
+          <p class="privacy-note">Files are read locally and never uploaded.</p>
+          <div class="message" id="analysis-message" role="status" aria-live="polite" hidden></div>
+          <div id="analysis-group-issues" class="analysis-issues" hidden></div>
+        </section>
+
+        <section class="data-section analysis-output" id="analysis-output" aria-labelledby="analysis-run-title" hidden>
+          <div class="analysis-toolbar">
+            <div>
+              <p class="section-label">Selected run</p>
+              <h2 id="analysis-run-title">Measurement summary</h2>
+            </div>
+            <div class="analysis-toolbar__controls">
+              <label for="analysis-run-select">
+                Run
+                <select id="analysis-run-select"></select>
+              </label>
+              <button
+                class="button button--quiet"
+                id="analysis-group-segments"
+                type="button"
+                hidden
+              >
+                Show segments separately
+              </button>
+              <div class="analysis-export" aria-label="Export selected run">
+                <button class="button button--secondary" id="analysis-export-csv" type="button">
+                  Export CSV
+                </button>
+                <button class="button button--secondary" id="analysis-export-excel" type="button">
+                  Export Excel
+                </button>
+              </div>
+            </div>
+          </div>
+          <p class="analysis-grouping-note" id="analysis-grouping-note" hidden></p>
+
+          <dl class="analysis-summary">
+            <div><dt>Segments</dt><dd id="analysis-segments">&mdash;</dd></div>
+            <div><dt>Observed duration</dt><dd id="analysis-duration">&mdash;</dd></div>
+            <div><dt>Start</dt><dd id="analysis-start">&mdash;</dd></div>
+            <div><dt>Integrity</dt><dd id="analysis-integrity">&mdash;</dd></div>
+          </dl>
+
+          <div class="timeline-heading">
+            <div>
+              <h3>Temperature timeline</h3>
+              <p>Power-off gaps have unknown duration and are not included in the time axis.</p>
+            </div>
+            <label for="analysis-probe-select">
+              Highlight
+              <select id="analysis-probe-select">
+                <option value="1">P1 · 0 cm</option>
+                <option value="2">P2 · −20 cm</option>
+                <option value="3">P3 · −40 cm</option>
+                <option value="4">P4 · −60 cm</option>
+                <option value="5">P5 · −80 cm</option>
+                <option value="6">P6 · −100 cm</option>
+                <option value="7">P7 · −120 cm</option>
+                <option value="8">P8 · −140 cm</option>
+              </select>
+            </label>
+          </div>
+          <div class="timeline" id="analysis-chart"></div>
+          <p class="power-gap-note" id="analysis-gap-note" hidden></p>
+
+          <div class="timeline-heading timeline-heading--rate">
+            <div>
+              <h3>Heating and cooling rate</h3>
+              <p>Selected probe · centered 60-second trend · matched time axis.</p>
+            </div>
+          </div>
+          <div class="timeline timeline--rate" id="analysis-rate-chart"></div>
+
+          <div class="table-wrap analysis-table-wrap">
+            <table>
+              <caption>Per-probe measurements</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Probe</th>
+                  <th scope="col">Height</th>
+                  <th scope="col">Samples valid / missing</th>
+                  <th scope="col">Peak</th>
+                  <th scope="col">Mean</th>
+                  <th scope="col">Time at peak</th>
+                  <th scope="col">First reached 40 °C</th>
+                  <th scope="col">Time ≥ 80 °C</th>
+                  <th scope="col">Fastest heating</th>
+                </tr>
+              </thead>
+              <tbody id="analysis-probe-table"></tbody>
+            </table>
+          </div>
+
+          <section class="integrity-detail" aria-labelledby="integrity-title">
+            <h3 id="integrity-title">Data checks and notes</h3>
+            <ul id="analysis-integrity-list"></ul>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <aside class="update-notice" id="update-notice" role="status" aria-live="polite" hidden>
+      <p>A portal update is ready. Finish installation, probe setup, or record work before reloading.</p>
+      <button class="button button--secondary" id="update-action" type="button" disabled>
+        Reload update
+      </button>
+    </aside>
+
+    <footer class="site-footer">
+      <p>Runs locally in your browser. Firmware files are bundled; device data is not uploaded.</p>
+      <p>Desktop browser with Web Serial · HTTPS or localhost</p>
+    </footer>
+
+    <aside
+      class="diagnostic-console"
+      id="diagnostic-console"
+      data-expanded="false"
+      aria-label="Diagnostics console"
+    >
+      <div class="diagnostic-console__bar">
+        <button
+          class="diagnostic-console__toggle"
+          id="diagnostic-console-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="diagnostic-console-panel"
+          aria-label="Expand diagnostics console (F2)"
+        >
+          <span class="diagnostic-console__mark" aria-hidden="true"></span>
+          <span class="diagnostic-console__name">Diagnostics</span>
+          <span class="diagnostic-console__count" id="diagnostic-console-count">0 entries</span>
+          <kbd aria-hidden="true">F2</kbd>
+          <span class="diagnostic-console__toggle-label" id="diagnostic-console-toggle-label">Expand</span>
+        </button>
+        <p class="diagnostic-console__preview" id="diagnostic-console-preview" aria-hidden="true">
+          No diagnostics recorded
+        </p>
+      </div>
+
+      <section
+        class="diagnostic-console__panel"
+        id="diagnostic-console-panel"
+        aria-labelledby="diagnostic-console-title"
+        tabindex="-1"
+        hidden
+      >
+        <div class="transcript-heading">
+          <div>
+            <p class="section-label">Managed USB activity</p>
+            <h2 id="diagnostic-console-title">Read-only transcript</h2>
+          </div>
+          <div class="transcript-actions">
+            <button class="button button--quiet" id="copy-transcript" type="button">
+              Copy transcript
+            </button>
+            <button class="button button--quiet" id="download-diagnostics" type="button">
+              Download diagnostics
+            </button>
+            <button class="button button--quiet" id="clear-transcript" type="button">
+              Clear
+            </button>
+          </div>
+        </div>
+        <p class="diagnostic-privacy">
+          This transcript can contain probe ROM addresses and device identifiers.
+          Review it before sharing. Nothing is uploaded. Manual commands and
+          free-form terminal input are not provided in this release.
+        </p>
+        <p id="diagnostic-action-status" role="status" aria-live="polite"></p>
+        <ol
+          id="protocol-log"
+          aria-label="Read-only diagnostic transcript"
+          aria-live="off"
+          tabindex="0"
+        ></ol>
+      </section>
+    </aside>
+
+    <dialog id="install-dialog" aria-labelledby="install-dialog-title">
+      <form method="dialog">
+        <p class="section-label">Write confirmation</p>
+        <h2 id="install-dialog-title">Install this verified release?</h2>
+        <p>
+          The portal will write the bundled sauna logger firmware to the selected
+          ESP32-C3. It will not erase the whole flash, and it will not accept a
+          replacement file.
+        </p>
+        <div class="actions">
+          <button class="button button--secondary" value="cancel">Back</button>
+          <button class="button button--primary" id="confirm-install" value="confirm">
+            Install verified firmware
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="write-dialog" aria-labelledby="write-dialog-title">
+      <form method="dialog">
+        <p class="section-label">Final check</p>
+        <h2 id="write-dialog-title">Save this probe order?</h2>
+        <p>
+          The logger will store this order, read it back, and restart. Existing
+          sauna records are not changed.
+        </p>
+        <div class="actions">
+          <button class="button button--secondary" value="cancel">Back</button>
+          <button class="button button--primary" id="confirm-write" value="confirm">
+            Write and restart
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="remove-run-dialog" aria-labelledby="remove-run-title">
+      <form method="dialog">
+        <p class="section-label">Remove saved run</p>
+        <h2 id="remove-run-title">Remove this run from the logger?</h2>
+        <p id="remove-run-description"></p>
+        <p id="remove-run-warning">
+          Every segment has a verified local copy. The logger removes the newest
+          segment first. If power is lost, older valid segments may remain.
+        </p>
+        <div class="actions">
+          <button class="button button--secondary" value="cancel">Keep on logger</button>
+          <button class="button button--primary" id="confirm-remove-run" value="confirm">
+            Remove run from logger
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

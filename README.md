@@ -51,9 +51,61 @@ Install the optional offline-analysis dependency once:
 .venv/bin/pip install -r requirements-analysis.txt
 ```
 
+## Commission the probes
+
+The firmware is generic: it contains no installation-specific probe addresses.
+On the first boot of this version, on a new device, or after NVS has been
+erased, probe discovery and fresh temperature scans remain available over USB
+but session logging is disabled until all eight probes have been mapped. Probe
+identity always comes from the DS18B20 ROM address, never from discovery order.
+
+The default commissioning method is to connect the probes one at a time,
+starting with probe 1 at the top/farthest end and finishing with probe 8 at the
+bottom/nearest end:
+
+```sh
+.venv/bin/python tools/identify_sensors.py --method connect
+```
+
+If an assembled harness cannot be disconnected, connect all eight probes and
+use the warm-one-at-a-time method instead:
+
+```sh
+.venv/bin/python tools/identify_sensors.py --method warm
+```
+
+The tool validates every ROM's family and Maxim CRC, requires eight unique
+addresses, and confirms that the final discovered set exactly matches the
+proposed map. It stages the complete map in RAM, writes a CRC-protected record
+to the inactive NVS slot, reads it back, and then reboots into that generation.
+After reconnecting, it verifies that boot activated that exact generation and
+that the same eight ROMs are still present. The previous valid slot is never
+erased during a normal commit. Partial identification progress is saved to
+`sensor-map.pending.json`, so an interrupted replacement cannot overwrite the
+last verified `sensor-map.json`. The final map replaces `sensor-map.json`
+atomically only after all post-reboot checks pass.
+
+Commissioning does not format LittleFS or alter existing `.slog` files.
+`LOG FORMAT YES` likewise leaves the probe mapping in NVS intact. A full-chip
+erase does remove the mapping, so keep `sensor-map.json` as a backup. The
+line-oriented protocol intended for both this tool and the browser portal is
+documented in
+[`docs/probe-commissioning.md`](docs/probe-commissioning.md).
+
+The browser portal installs its own versioned, SHA-256-checked firmware package,
+verifies the running logger, and commissions a fully assembled eight-probe
+column by warming one metal tip at a time. The secondary bench method still
+supports connecting probes individually. It verifies the committed map after
+restart and creates a local `sensor-map.json` backup. The static utility is
+designed for GitHub Pages and remains available offline after its files have
+been cached. It has no arbitrary firmware picker or whole-flash erase option.
+See [`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md) for
+browser requirements, recovery behavior, local serving, and deployment.
+
 ## Session logging
 
 - Samples are taken every 10 seconds.
+- No session can start without one complete, valid eight-probe configuration.
 - The latest 10 minutes are retained in RAM while idle.
 - A session starts after any valid probe remains above 40 C for 30 seconds.
 - The pre-trigger readings are committed immediately; later blocks are flushed
@@ -124,12 +176,13 @@ thermal maps, and a compact outcome table. Every report embeds its plotting
 code and can be archived alongside the original logs.
 
 `status` reports filesystem health, whether the full reserve is currently free,
-retention counts and any pending retirement, the latest sensor and internal-chip
-temperature, RTC source, reset cause, interrupted-session state, and whether a
-crash dump is present. Retention and a low-space start refusal are also reported
-over USB. There is currently no standalone LED warning, so an unattended refusal
-is only visible after USB is reconnected; run `status` before any measurement
-that must not be missed.
+retention counts and any pending retirement, probe-configuration state and
+generation, discovered and currently valid mapped probes, the latest sensor and
+internal-chip temperature, RTC source, reset cause, interrupted-session state,
+and whether a crash dump is present. Retention and a low-space start refusal are
+also reported over USB. There is currently no standalone LED warning, so an
+unattended refusal is only visible after USB is reconnected; run `status` before
+any measurement that must not be missed.
 
 If a watchdog crash occurred, preserve the raw dump before erasing it:
 
@@ -156,16 +209,22 @@ refuses to delete a segment while another on-device session points to it:
 .venv/bin/python tools/logs.py delete 1
 ```
 
-## Bring-up procedure
-
-1. Connect one sensor and confirm that exactly one ROM address is reported.
-2. Label the sensor with that ROM address and its intended height.
-3. Add sensors individually, checking the count after each addition.
-4. Record the final ROM-address-to-height mapping before installing the probe
-   assembly.
-
-ROM addresses, rather than discovery indexes, will be used for the permanent
-height mapping because discovery order is not a physical identity guarantee.
+The portal's **Records** section provides the guarded browser equivalent: it
+shows the rolling-store reserve and logical chains, supports CRC-validated raw
+downloads, and prefers whole-run removal only after every segment has been
+saved and read back through the file-system picker. Browsers without that API
+can use an explicit, strongly warned override after Quick downloading every
+segment; the portal CRC-checks the transfer and compares fresh device bytes
+again immediately before deletion, but cannot prove the browser saved a copy.
+**Analyze** opens one or more `.slog` files entirely offline and groups only
+unambiguous continuations by default. The user can instead view each segment
+alone without changing its raw linkage metadata. It shows an eight-probe SVG
+timeline with explicit unknown-duration gaps and a selected-probe derivative
+chart on the same time axis. The selected view can be exported as CSV or as an
+Excel `.xlsx` workbook; both keep segment-relative time and mark unknown power
+gaps instead of inventing elapsed time. See
+[`docs/web-data-workspace.md`](docs/web-data-workspace.md) for the preservation
+and deletion gates and the export schema.
 
 ## Installation geometry
 
@@ -174,27 +233,11 @@ Probes increase in number downward toward the ESP32 at 20 cm intervals. Probe 8
 is therefore 140 cm below probe 1. These are relative heights; an absolute
 ceiling or floor height can be added later without changing sensor identity.
 
-## Identify probe heights
-
-With the discovery firmware running, start the interactive mapper:
-
-```sh
-.venv/bin/python tools/identify_sensors.py
-```
-
-The tool learns five ambient samples. Start at the end opposite the ESP32, then
-put the probes in hot water one at a time while moving toward the ESP32. The
-mapping records position 1 as the farthest probe and position 8 as the probe
-nearest the ESP32; installation heights and orientation can be assigned later.
-A probe is accepted after it rises at least 3 C and leads every other unmapped
-probe by at least 1 C. Partial progress is saved after every identification in
-`sensor-map.json`.
-
 ## Unattended sauna test checklist
 
-1. Build and upload the firmware, then run `status` and confirm all eight probes,
-   `RTC source: external crystal`, and that the full-session storage reserve is
-   ready.
+1. Build and upload the firmware, commission the probes if needed, then run
+   `status` and confirm a valid configuration, all eight probes, `RTC source:
+   external crystal`, and that the full-session storage reserve is ready.
 2. Download any sessions not already backed up. Keep the XIAO and wiring in the
    coolest practical location; keep the USB power bank outside the sauna.
 3. Disconnect serial, power from the power bank, and let the firmware start the

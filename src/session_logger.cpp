@@ -61,7 +61,9 @@ struct __attribute__((packed)) SessionHeaderV2 {
   uint8_t resetReason;
   uint8_t continuationKind;
   uint8_t initialRtcSource;
-  uint8_t reserved2;
+  // For MaxDurationSampleAnchored, whole seconds from the predecessor's final
+  // captured sample to this segment's trigger. Zero means no proven timing.
+  uint8_t continuationDelaySeconds;
   uint32_t initialRtcHz;
   SensorDescriptor sensors[kSensorCount];
   uint32_t headerCrc;
@@ -144,17 +146,6 @@ constexpr size_t kMaximumEncodedSessionBytes =
     kMaximumEncodedRecords * sizeof(StoredRecordV2) + sizeof(SessionFooter);
 constexpr size_t kFilesystemReserveMarginBytes = 4 * 4096;
 
-constexpr SensorDescriptor kDescriptors[kSensorCount] = {
-    {{0x28, 0x25, 0xE1, 0xBD, 0, 0, 0, 0x58}, 0},
-    {{0x28, 0x56, 0xBE, 0x53, 0, 0, 0, 0x3F}, -20},
-    {{0x28, 0x7C, 0x38, 0xC0, 0, 0, 0, 0x78}, -40},
-    {{0x28, 0xD9, 0x2E, 0x50, 0, 0, 0, 0xCE}, -60},
-    {{0x28, 0x9A, 0xBC, 0x52, 0, 0, 0, 0xD1}, -80},
-    {{0x28, 0xCD, 0x19, 0x52, 0, 0, 0, 0x9B}, -100},
-    {{0x28, 0x93, 0x93, 0x52, 0, 0, 0, 0xD0}, -120},
-    {{0x28, 0x01, 0xF3, 0x52, 0, 0, 0, 0x1E}, -140},
-};
-
 uint8_t bitCount(uint8_t value) {
   uint8_t count = 0;
   while (value) {
@@ -162,6 +153,20 @@ uint8_t bitCount(uint8_t value) {
     value >>= 1;
   }
   return count;
+}
+
+const char* probeConfigWireState(ProbeConfigState state) {
+  switch (state) {
+    case ProbeConfigState::Unconfigured:
+      return "unconfigured";
+    case ProbeConfigState::Ready:
+      return "valid";
+    case ProbeConfigState::Corrupt:
+    case ProbeConfigState::Ambiguous:
+    case ProbeConfigState::StorageUnavailable:
+      return "invalid";
+  }
+  return "invalid";
 }
 
 bool parseSessionId(const String& path, uint32_t* id) {
@@ -196,6 +201,62 @@ uint32_t crc32(const uint8_t* data, size_t length, uint32_t initial) {
     }
   }
   return ~crc;
+}
+
+bool SessionLogger::setProbeConfiguration(const ProbeMapping* mapping) {
+  if (active_) return false;
+  probeMappingReady_ =
+      mapping && mapping->generation != 0 &&
+      validateProbeMapping(*mapping) == ProbeConfigError::None;
+  if (probeMappingReady_) {
+    probeMapping_ = *mapping;
+  } else {
+    memset(&probeMapping_, 0, sizeof(probeMapping_));
+  }
+  resetIdleSamplingState();
+  if (filesystemReady_) findInterruptedSession();
+  return probeMappingReady_;
+}
+
+void SessionLogger::setProbeConfigStatus(ProbeConfigState state,
+                                         uint32_t generation,
+                                         uint8_t validSlots,
+                                         bool restartRequired) {
+  probeConfigState_ = state;
+  storedProbeConfigGeneration_ = generation;
+  probeConfigValidSlots_ = validSlots;
+  probeConfigRestartRequired_ = restartRequired;
+}
+
+void SessionLogger::setProbeBusStatus(uint8_t discovered,
+                                      uint8_t mappedValid) {
+  discoveredProbes_ = discovered;
+  mappedValidProbes_ = mappedValid;
+}
+
+void SessionLogger::setCommissioningMode(bool enabled) {
+  if (commissioningMode_ == enabled || (enabled && active_)) return;
+  commissioningMode_ = enabled;
+  resetIdleSamplingState();
+  if (!enabled && filesystemReady_) findInterruptedSession();
+}
+
+void SessionLogger::resetIdleSamplingState() {
+  if (active_) return;
+  ringHead_ = 0;
+  ringCount_ = 0;
+  pendingCount_ = 0;
+  startCandidate_ = false;
+  coolingCandidate_ = false;
+  aboveStartSinceMs_ = 0;
+  coolingSinceMs_ = 0;
+  sessionPeakCentiC_ = INT16_MIN;
+  continuationOf_ = 0;
+  continuationKind_ = ContinuationKind::None;
+  continuationAnchorAtMs_ = 0;
+  hotContinuationEligible_ = false;
+  interruptedSessionWasHot_ = false;
+  haveLatestReading_ = false;
 }
 
 bool SessionLogger::begin() {
@@ -267,13 +328,16 @@ void SessionLogger::pushRing(const SensorReading& reading) {
 }
 
 void SessionLogger::addSample(const SensorReading& reading) {
-  pushRing(reading);
   latestReading_ = reading;
   haveLatestReading_ = true;
   if (!filesystemReady_) {
     retryFilesystem(reading.capturedAtMs);
-    if (!filesystemReady_) return;
   }
+  if (!probeMappingReady_ || commissioningMode_) return;
+  // Keep the idle pre-trigger window in RAM through a transient mount outage.
+  // An active session cannot coexist with an unavailable filesystem.
+  pushRing(reading);
+  if (!filesystemReady_) return;
   if (active_) {
     evaluateActive(reading);
   } else {
@@ -298,6 +362,7 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
     if (bitCount(reading.validMask) >= 6) {
       continuationOf_ = 0;
       continuationKind_ = ContinuationKind::None;
+      continuationAnchorAtMs_ = 0;
       hotContinuationEligible_ = false;
     }
     return;
@@ -308,6 +373,7 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
     if (hotContinuationEligible_ && interruptedSessionWasHot_) {
       continuationOf_ = interruptedSessionId_;
       continuationKind_ = ContinuationKind::ProbablePowerRestore;
+      continuationAnchorAtMs_ = 0;
     }
     return;
   }
@@ -321,6 +387,11 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
 }
 
 bool SessionLogger::startSession(const SensorReading& trigger) {
+  if (!probeMappingReady_ || commissioningMode_) {
+    Serial.printf("logger_event=logging_blocked reason=%s\n",
+                  commissioningMode_ ? "commissioning" : "not_configured");
+    return false;
+  }
   const uint32_t previousHighestId = highestSessionId();
   if (previousHighestId == UINT32_MAX) {
     Serial.println("logger_event=start_failed reason=session_id_exhausted");
@@ -367,10 +438,28 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
   header.continuationOf = continuationOf_;
   header.bootId = bootId_;
   header.resetReason = resetReason_;
-  header.continuationKind = static_cast<uint8_t>(continuationKind_);
+  ContinuationKind storedContinuationKind = continuationKind_;
+  if (storedContinuationKind == ContinuationKind::MaxDurationSampleAnchored) {
+    const uint32_t delaySeconds =
+        static_cast<uint32_t>(trigger.capturedAtMs - continuationAnchorAtMs_) /
+        1000U;
+    if (delaySeconds > 0 && delaySeconds <= UINT8_MAX) {
+      header.continuationDelaySeconds = static_cast<uint8_t>(delaySeconds);
+    } else {
+      // Preserve the link, but use the older conservative kind when the
+      // measured whole-second delay cannot fit in the v2 header byte.
+      storedContinuationKind = ContinuationKind::MaxDuration;
+    }
+  }
+  header.continuationKind = static_cast<uint8_t>(storedContinuationKind);
   header.initialRtcSource = static_cast<uint8_t>(rtc_clk_slow_freq_get());
   header.initialRtcHz = rtc_clk_slow_freq_get_hz();
-  memcpy(header.sensors, kDescriptors, sizeof(kDescriptors));
+  for (uint8_t index = 0; index < kSensorCount; ++index) {
+    memcpy(header.sensors[index].rom, probeMapping_.roms[index],
+           sizeof(header.sensors[index].rom));
+    header.sensors[index].relativeHeightCm =
+        probeRelativeHeightCm(probeMapping_.geometryId, index);
+  }
   header.headerCrc = crc32(reinterpret_cast<const uint8_t*>(&header),
                            sizeof(header) - sizeof(header.headerCrc));
   if (file.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) !=
@@ -412,6 +501,7 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
                 currentSessionId_, ringCount_);
   continuationOf_ = 0;
   continuationKind_ = ContinuationKind::None;
+  continuationAnchorAtMs_ = 0;
   hotContinuationEligible_ = false;
   return true;
 }
@@ -446,7 +536,8 @@ void SessionLogger::evaluateActive(const SensorReading& reading) {
              kEndHoldMs) {
     finishSession(FinishReason::NormalCooling,
                   static_cast<int32_t>(reading.capturedAtMs - triggerAtMs_) /
-                      1000);
+                      1000,
+                  reading.capturedAtMs);
     return;
   }
 
@@ -454,7 +545,8 @@ void SessionLogger::evaluateActive(const SensorReading& reading) {
       kMaxSessionMs) {
     finishSession(FinishReason::MaxDuration,
                   static_cast<int32_t>(reading.capturedAtMs - triggerAtMs_) /
-                      1000);
+                      1000,
+                  reading.capturedAtMs);
   }
 }
 
@@ -516,7 +608,8 @@ bool SessionLogger::appendFooter(const void* footer, size_t size) {
   return written;
 }
 
-void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds) {
+void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds,
+                                  uint32_t finishedAtMs) {
   if (!active_) return;
   if (!commitPending()) {
     interruptActiveSession("final_block_write_failed");
@@ -540,9 +633,10 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds) {
   currentSessionId_ = 0;
   if (reason == FinishReason::MaxDuration) {
     continuationOf_ = finishedId;
-    continuationKind_ = ContinuationKind::MaxDuration;
+    continuationKind_ = ContinuationKind::MaxDurationSampleAnchored;
+    continuationAnchorAtMs_ = finishedAtMs;
     startCandidate_ = true;
-    aboveStartSinceMs_ = millis();
+    aboveStartSinceMs_ = finishedAtMs;
   }
 }
 
@@ -559,6 +653,7 @@ void SessionLogger::interruptActiveSession(const char* reason) {
   hotContinuationEligible_ = true;
   continuationOf_ = interruptedId;
   continuationKind_ = ContinuationKind::ProbablePowerRestore;
+  continuationAnchorAtMs_ = 0;
 }
 
 String SessionLogger::sessionPath(uint32_t id) const {
@@ -1074,6 +1169,40 @@ void SessionLogger::findInterruptedSession() {
     }
     entry.close();
   }
+  hotContinuationEligible_ = interruptedSessionWasHot_;
+}
+
+bool SessionLogger::sessionLayoutMatches(const uint8_t* headerBytes,
+                                         uint16_t version) const {
+  if (!probeMappingReady_ || !headerBytes) return false;
+  SensorDescriptor descriptors[kSensorCount]{};
+  int16_t spacingCm = 0;
+  uint8_t sensorCount = 0;
+  if (version == 1) {
+    SessionHeaderV1 header{};
+    memcpy(&header, headerBytes, sizeof(header));
+    spacingCm = header.spacingCm;
+    sensorCount = header.sensorCount;
+    memcpy(descriptors, header.sensors, sizeof(descriptors));
+  } else if (version == 2) {
+    SessionHeaderV2 header{};
+    memcpy(&header, headerBytes, sizeof(header));
+    spacingCm = header.spacingCm;
+    sensorCount = header.sensorCount;
+    memcpy(descriptors, header.sensors, sizeof(descriptors));
+  } else {
+    return false;
+  }
+  if (spacingCm != 20 || sensorCount != kSensorCount) return false;
+  for (uint8_t index = 0; index < kSensorCount; ++index) {
+    if (memcmp(descriptors[index].rom, probeMapping_.roms[index],
+               sizeof(descriptors[index].rom)) != 0 ||
+        descriptors[index].relativeHeightCm !=
+            probeRelativeHeightCm(probeMapping_.geometryId, index)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool SessionLogger::sessionEndsHot(File& file) {
@@ -1101,6 +1230,7 @@ bool SessionLogger::sessionEndsHot(File& file) {
       crc32(headerBytes, prefix.headerSize - sizeof(storedHeaderCrc))) {
     return false;
   }
+  if (!sessionLayoutMatches(headerBytes, prefix.version)) return false;
 
   const size_t recordSize = prefix.version == 1 ? sizeof(StoredRecordV1)
                                                  : sizeof(StoredRecordV2);
@@ -1158,21 +1288,36 @@ bool SessionLogger::sessionFinalized(File& file, FinishReason* reason) {
   return valid;
 }
 
-void SessionLogger::handleSerial() {
+void SessionLogger::handleSerial(ExtraCommandHandler extraHandler) {
   while (Serial.available()) {
     const char character = static_cast<char>(Serial.read());
     if (character == '\n' || character == '\r') {
-      if (serialLine_.length()) {
-        processCommand(serialLine_);
+      if (serialLineOverflow_) {
+        Serial.println("SYS_ERROR code=command_too_long");
+        serialLineOverflow_ = false;
+        serialLine_ = "";
+      } else if (serialLine_.length()) {
+        // Autonomous diagnostics such as TELEM are deliberately best-effort.
+        // If USB CDC drops the tail of one while the host opens the port, its
+        // newline can disappear too.  Start every solicited response at a
+        // fresh boundary so a valid response can never be joined to that
+        // truncated chatter and become invisible to a line-oriented client.
+        Serial.println();
+        bool handled = processCommand(serialLine_);
+        if (!handled && extraHandler) handled = extraHandler(serialLine_);
+        if (!handled) Serial.println("LOG_ERROR unknown_command");
         serialLine_ = "";
       }
-    } else if (serialLine_.length() < 96) {
+    } else if (!serialLineOverflow_ && serialLine_.length() < 127) {
       serialLine_ += character;
+    } else {
+      serialLineOverflow_ = true;
+      serialLine_ = "";
     }
   }
 }
 
-void SessionLogger::processCommand(const String& command) {
+bool SessionLogger::processCommand(const String& command) {
   if (command == "LOG STATUS") {
     printStatus();
   } else if (command == "LOG LIST") {
@@ -1209,6 +1354,7 @@ void SessionLogger::processCommand(const String& command) {
         coolingCandidate_ = false;
         continuationOf_ = 0;
         continuationKind_ = ContinuationKind::None;
+        continuationAnchorAtMs_ = 0;
         hotContinuationEligible_ = false;
         findInterruptedSession();
       }
@@ -1216,8 +1362,9 @@ void SessionLogger::processCommand(const String& command) {
                     retentionReset);
     }
   } else {
-    Serial.println("LOG_ERROR unknown_command");
+    return false;
   }
+  return true;
 }
 
 void SessionLogger::printStatus() {
@@ -1234,23 +1381,32 @@ void SessionLogger::printStatus() {
           ? latestReading_.chipCentiC
           : INT16_MIN;
   const size_t available = freeBytes();
+  const uint32_t continuationPendingId =
+      continuationOf_ ? continuationOf_
+                      : (hotContinuationEligible_ ? interruptedSessionId_ : 0);
   Serial.printf("LOG_STATUS fs=%u active=%u id=%u total=%u used=%u free=%u "
                 "boot=%u reset=%u sensors=%u chip_centi_c=%d rtc_source=%u "
-                "rtc_hz=%u interrupted=%u coredump=%u coredump_bytes=%u "
+                "rtc_hz=%u interrupted=%u continuation_pending=%u coredump=%u "
+                "coredump_bytes=%u "
                 "retention=rolling reserve_ok=%u reserve_required=%u "
                 "retention_deleted_runs=%u retention_deleted_segments=%u "
                 "retention_last_run=%u retention_last_segment=%u "
                 "retention_pending=%u retention_pending_root=%u "
                 "retention_highest_session=%u retention_catalog_overflow=%u "
                 "retention_catalog_invalid=%u retention_audit_ok=%u "
-                "retention_last_refusal=%s\n",
+                "retention_last_refusal=%s protocol=1 config_state=%s "
+                "config_generation=%u active_generation=%u geometry=%s "
+                "discovered=%u mapped_valid=%u commissioning=%u "
+                "restart_required=%u valid_slots=%u\n",
                 filesystemReady_, active_, currentSessionId_,
                 filesystemReady_ ? LittleFS.totalBytes() : 0,
                 filesystemReady_ ? LittleFS.usedBytes() : 0,
                 static_cast<unsigned>(available),
                 bootId_, resetReason_, validSensors, chipCentiC,
                 static_cast<unsigned>(rtc_clk_slow_freq_get()),
-                rtc_clk_slow_freq_get_hz(), interruptedSessionId_, coreDumpValid,
+                rtc_clk_slow_freq_get_hz(), interruptedSessionId_,
+                continuationPendingId,
+                coreDumpValid,
                 coreDumpValid ? static_cast<unsigned>(coreDumpSize) : 0,
                 filesystemReady_ && available >= kSessionReserveBytes,
                 static_cast<unsigned>(kSessionReserveBytes),
@@ -1259,7 +1415,12 @@ void SessionLogger::printStatus() {
                 retentionPendingSegment_, retentionPendingRun_,
                 retentionHighestSessionId_, retentionCatalogOverflow_,
                 retentionCatalogInvalid_, retentionAuditAvailable_,
-                retentionRefusalName());
+                retentionRefusalName(), probeConfigWireState(probeConfigState_),
+                storedProbeConfigGeneration_,
+                probeMappingReady_ ? probeMapping_.generation : 0,
+                probeMappingReady_ ? "column8_20cm_v1" : "none",
+                discoveredProbes_, mappedValidProbes_, commissioningMode_,
+                probeConfigRestartRequired_, probeConfigValidSlots_);
 }
 
 void SessionLogger::listSessions() {
@@ -1311,7 +1472,10 @@ void SessionLogger::listSessions() {
 }
 
 void SessionLogger::downloadSession(uint32_t id) {
-  if (!filesystemReady_ || (active_ && id == currentSessionId_)) {
+  // A hex transfer is synchronous and can occupy the serial loop for long
+  // enough to disturb acquisition timing. Keep every raw transfer out of an
+  // active measurement, including transfers of older immutable sessions.
+  if (!filesystemReady_ || active_) {
     Serial.println("LOG_ERROR unavailable_or_active");
     return;
   }
@@ -1387,6 +1551,13 @@ void SessionLogger::downloadCoreDump() {
 bool SessionLogger::deleteSession(uint32_t id) {
   if (!filesystemReady_ || (active_ && id == currentSessionId_)) return false;
   if (retentionPendingSegment_) return false;
+  // The next segment has not written its header yet. Removing this parent
+  // would silently discard the only durable link for a max-duration or
+  // probable-power continuation.
+  const uint32_t continuationPendingId =
+      continuationOf_ ? continuationOf_
+                      : (hotContinuationEligible_ ? interruptedSessionId_ : 0);
+  if (id && continuationPendingId == id) return false;
   if (!id || !LittleFS.exists(sessionPath(id))) return false;
 
   // Refuse to orphan a continuation. Linked runs can still be removed
@@ -1420,11 +1591,6 @@ bool SessionLogger::deleteSession(uint32_t id) {
   if (removed && interruptedSessionId_ == id) {
     interruptedSessionId_ = 0;
     interruptedSessionWasHot_ = false;
-  }
-  if (removed && continuationOf_ == id) {
-    continuationOf_ = 0;
-    continuationKind_ = ContinuationKind::None;
-    hotContinuationEligible_ = false;
   }
   return removed;
 }
