@@ -20,6 +20,7 @@ import {
   SerialTransportError,
   WebSerialTransport,
   requestSerialPort,
+  serialPortOpenErrorMessage,
   webSerialSupported,
 } from "./serial-transport.js";
 import { FlashInstallationUi } from "./flash-ui.js";
@@ -371,6 +372,8 @@ function friendlyError(error, position = controller?.snapshot.nextPosition) {
   if (error?.name === "SecurityError") {
     return "The browser refused access to the serial port. Use the Choose logger button from this top-level page.";
   }
+  const serialOpenMessage = serialPortOpenErrorMessage(error);
+  if (serialOpenMessage) return serialOpenMessage;
   if (error instanceof DeviceError) {
     const messages = {
       active_session:
