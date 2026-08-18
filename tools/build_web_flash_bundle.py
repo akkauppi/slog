@@ -22,7 +22,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 
 SCHEMA_VERSION = 1
@@ -498,6 +498,7 @@ def build_bundle(
     output_dir: Path,
     *,
     require_release_metadata: bool = False,
+    project_dir: Path | None = None,
 ) -> dict[str, object]:
     build_dir = build_dir.resolve()
     csv_partitions = parse_partition_csv(partitions_csv.resolve())
@@ -509,7 +510,9 @@ def build_bundle(
         build_dir / "sauna_build_metadata.json", require_release_metadata
     )
     if require_release_metadata:
-        verify_public_repository(partitions_csv.resolve().parent, metadata["source_commit"])
+        if project_dir is None:
+            raise BundleError("public firmware validation requires the project directory")
+        verify_public_repository(project_dir.resolve(), metadata["source_commit"])
     application = next(image.source for image in images if image.role == "application")
     _ensure_compiled_identity(application, metadata)
 
@@ -563,9 +566,9 @@ def build_bundle(
     return manifest
 
 
-def run_platformio(project_dir: Path, environment: str) -> None:
+def run_platformio(project_dir: Path) -> None:
     subprocess.run(
-        [sys.executable, "-m", "platformio", "run", "-e", environment],
+        [sys.executable, "-m", "platformio", "run", "-e", PLATFORMIO_ENVIRONMENT],
         cwd=project_dir,
         env=os.environ.copy(),
         check=True,
@@ -576,11 +579,6 @@ def arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", action="store_true", help="run the pinned PlatformIO build first")
-    parser.add_argument("--environment", default=PLATFORMIO_ENVIRONMENT)
-    parser.add_argument(
-        "--build-dir", type=Path, default=root / ".pio/build" / PLATFORMIO_ENVIRONMENT
-    )
-    parser.add_argument("--partitions-csv", type=Path, default=root / "partitions.csv")
     parser.add_argument(
         "--output-dir", type=Path, default=root / "portal/generated/firmware"
     )
@@ -606,13 +604,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             ) from error
         if relative_output == Path("."):
             raise BundleError("--output-dir must not replace portal/generated itself")
+        if options.require_release_metadata and not options.build:
+            raise BundleError("public firmware packaging requires a fresh --build")
         if options.build:
-            run_platformio(root, options.environment)
+            run_platformio(root)
         manifest = build_bundle(
-            options.build_dir,
-            options.partitions_csv,
+            root / ".pio/build" / PLATFORMIO_ENVIRONMENT,
+            root / "partitions.csv",
             output_dir,
             require_release_metadata=options.require_release_metadata,
+            project_dir=root,
         )
     except (BundleError, OSError, subprocess.CalledProcessError) as error:
         print(f"web flash bundle failed: {error}", file=sys.stderr)

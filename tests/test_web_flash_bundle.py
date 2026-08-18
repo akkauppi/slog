@@ -296,6 +296,10 @@ class CommandLineSafetyTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(bundle.main(["--output-dir", str(generated_root)]), 1)
 
+    def test_public_mode_requires_a_fresh_build(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(bundle.main(["--require-release-metadata"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
