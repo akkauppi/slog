@@ -42,6 +42,14 @@ Hardware upload and serial commands require explicit user intent and access to
 `/dev/ttyACM0`. A healthy pre-test `status` has `fs=1`, eight sensors,
 `rtc_source=1`, `rtc_hz=32768`, and nonzero free bytes.
 
+Use `tools/serve_portal.py` for the local portal. There must be only one portal
+server and one browser origin for this repository. Before starting it, run
+`.venv/bin/python tools/serve_portal.py status`; reuse the existing server or
+stop it explicitly. Never start an ad-hoc `python -m http.server`, silently try
+another port, or change ports to evade browser cache/recovery state. The
+canonical URL is `http://localhost:8000/`; an alternate port requires explicit
+user approval as well as the script's `--allow-alternate-port` flag.
+
 Raw `.slog` files are the source of truth, but the device is a bounded rolling
 store rather than the permanent archive. When space is needed for a new run,
 firmware may retire the oldest eligible logical run before that new run starts.

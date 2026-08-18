@@ -95,9 +95,13 @@ same-logger replacement described below keeps the lock while the portal returns
 to the old mandatory verification. Closing the page releases the browser lock
 naturally while the durable marker remains available to the next recovery tab.
 
-After a successful write, reset the board into normal operation and reconnect
-to the application serial port. The portal reads `SYS INFO` and requires the
-expected protocol, `sauna_logger` product, `sauna_ota_v1` partition identifier,
+After a successful write, the adapter asserts reset for 200 ms, releases it,
+waits another 200 ms, and closes the bootloader transport. Release **BOOT** and
+reconnect to the application serial port. If the port remains silent, press
+**RESET** once without holding **BOOT**; if the board has another power source,
+remove all power before reconnecting USB. The portal reads `SYS INFO` and
+requires the expected protocol, `sauna_logger` product, `sauna_ota_v1`
+partition identifier,
 OTA application slot, firmware version, and source commit from the manifest.
 The package, board identity, and these expected runtime fields remain in the
 recovery marker across reloads. The marker is cleared only after the exact
@@ -123,21 +127,33 @@ verification must still succeed before that new marker is cleared.
 
 ## Probe commissioning
 
-The browser intentionally implements only the connect-one-at-a-time method:
+The primary browser workflow is designed for a finished logger: every probe
+stays wired throughout setup.
 
-1. The user starts a configuration transaction, which pauses automatic session
-   logging before probes are rearranged.
-2. The portal requires an empty 1-Wire bus.
-3. The user connects P1 through P8 one at a time, leaving every accepted probe
-   connected. Each scan must add exactly one CRC-valid DS18B20 address without
-   losing a previously accepted address.
-4. The portal checks the final eight-probe set, shows the physical order, and
+1. The user starts an assembled-probe transaction, which pauses automatic
+   session logging. All eight probes must be connected and cool.
+2. The portal takes five complete scans. The ROM set must remain unchanged,
+   every probe must return a temperature, and each individual probe must stay
+   within a 0.5 °C range. Its five-reading median becomes its baseline.
+3. Starting at P1, the user warms only the named physical metal tip by hand or
+   with a warm, not hot, cloth. No wire or probe is disconnected.
+4. A ROM is accepted only when two fresh scans select the same unmapped probe,
+   at least 3.0 °C above its own baseline and at least 1.0 °C ahead of every other
+   unmapped probe. Previously mapped probes are excluded, so they do not need
+   to cool before moving to the next position. The final probe still needs two
+   qualifying readings.
+5. The portal checks the final eight-probe set, shows the physical order, and
    asks for explicit confirmation before writing.
-5. It sends all eight positions, commits the CRC-protected map, reads it back,
+6. It sends all eight positions, commits the CRC-protected map, reads it back,
    and restarts the logger.
-6. After reconnecting, it verifies the active generation and ordered map, then
+7. After reconnecting, it verifies the active generation and ordered map, then
    performs one final exact eight-probe bus check. Only then can the verified
    `sensor-map.json` be downloaded.
+
+A secondary bench-build method retains the original empty-bus workflow: connect
+P1 through P8 one at a time, leaving each accepted probe connected. It is for a
+loose or connectorized harness, not a soldered finished product. Each scan must
+add exactly one CRC-valid DS18B20 address without losing an accepted address.
 
 P1 is the top/farthest probe. Positions descend toward the logger in 20 cm
 steps, ending with P8 at -140 cm, nearest the logger. ROM identity is never
@@ -154,6 +170,15 @@ files are never read, changed, or deleted. Protocol version 1 does not expose a
 unique logger ID, so recovery always verifies the exact configuration
 generation, CRC, ordered ROM addresses, and live probe set; it never trusts a
 port based only on its USB model.
+
+If the page is reloaded after all eight positions were saved, the portal does
+not infer that a write succeeded. It first inspects the boot-selected map. A
+saved map is eligible for recovery only when all eight ordered ROM addresses
+exactly match the active configuration and any saved commit generation and CRC
+also match. `restart_required=1` is handled before recovery. The user must then
+run the same diagnostic `CFG BEGIN` / `CFG SCAN` / `CFG ABORT` live-bus check;
+only that successful check marks the map verified and clears the pending local
+record. Partial, malformed, or mismatched saved work is never promoted.
 
 ## Advanced diagnostics
 
@@ -208,10 +233,19 @@ unknown, or abbreviated source identities cannot be published.
 Serve the portal rather than opening its HTML file directly:
 
 ```sh
-python3 -m http.server 8000 --directory portal
+.venv/bin/python tools/serve_portal.py status
+.venv/bin/python tools/serve_portal.py start
 ```
 
 Open `http://localhost:8000/` in a current desktop browser with Web Serial.
+The server binds only to the local machine and stays in the foreground; stop it
+with Ctrl-C, or from another terminal with
+`.venv/bin/python tools/serve_portal.py stop`. The repository lock refuses a
+second managed instance, and on Linux startup also refuses an ad-hoc Python
+server already serving this `portal/` directory. It never searches for another
+free port. Keep this canonical origin: changing ports also changes the browser
+storage origin and can bypass an in-progress recovery marker.
+
 Current Brave is suitable; Firefox requires version 151 or newer and remains a
 hardware-test target. Run the dependency-free portal tests with:
 
@@ -260,7 +294,6 @@ accepted only from `main`.
 
 ## Deliberately deferred
 
-- warm-one-at-a-time browser commissioning
 - routine OTA updates or arbitrary firmware uploads
 - log download and offline analysis
 - build instructions inside the portal
