@@ -118,6 +118,10 @@ test("the portal has no third-party runtime assets", async () => {
   assert.match(html, /data-portal-view="analyze"/);
   assert.match(html, /id="analysis-export-csv"/);
   assert.match(html, /id="analysis-export-excel"/);
+  assert.match(html, /id="analysis-group-segments"/);
+  assert.match(html, /id="analysis-grouping-note"/);
+  assert.match(html, /id="analysis-rate-chart"/);
+  assert.match(html, /id="remove-run-warning"/);
 });
 
 test("assembled-probe commissioning is the primary portal workflow", async () => {

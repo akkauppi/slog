@@ -304,8 +304,9 @@
           <p class="section-label">Local USB records</p>
           <h1 id="records-title" tabindex="-1">Stored sauna records</h1>
           <p>
-            Download CRC-checked raw files from the logger. A complete run can
-            be removed only after every segment has been saved and verified.
+            Download CRC-checked raw files from the logger. Save and verify is
+            safest; if the browser cannot verify a saved file, an explicit
+            removal override is available.
           </p>
         </div>
 
@@ -383,6 +384,14 @@
                 Run
                 <select id="analysis-run-select"></select>
               </label>
+              <button
+                class="button button--quiet"
+                id="analysis-group-segments"
+                type="button"
+                hidden
+              >
+                Show segments separately
+              </button>
               <div class="analysis-export" aria-label="Export selected run">
                 <button class="button button--secondary" id="analysis-export-csv" type="button">
                   Export CSV
@@ -393,6 +402,7 @@
               </div>
             </div>
           </div>
+          <p class="analysis-grouping-note" id="analysis-grouping-note" hidden></p>
 
           <dl class="analysis-summary">
             <div><dt>Segments</dt><dd id="analysis-segments">&mdash;</dd></div>
@@ -422,6 +432,14 @@
           </div>
           <div class="timeline" id="analysis-chart"></div>
           <p class="power-gap-note" id="analysis-gap-note" hidden></p>
+
+          <div class="timeline-heading timeline-heading--rate">
+            <div>
+              <h3>Heating and cooling rate</h3>
+              <p>Selected probe · centered 60-second trend · matched time axis.</p>
+            </div>
+          </div>
+          <div class="timeline timeline--rate" id="analysis-rate-chart"></div>
 
           <div class="table-wrap analysis-table-wrap">
             <table>
@@ -568,7 +586,7 @@
         <p class="section-label">Remove saved run</p>
         <h2 id="remove-run-title">Remove this run from the logger?</h2>
         <p id="remove-run-description"></p>
-        <p>
+        <p id="remove-run-warning">
           Every segment has a verified local copy. The logger removes the newest
           segment first. If power is lost, older valid segments may remain.
         </p>

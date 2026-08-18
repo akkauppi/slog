@@ -206,13 +206,18 @@ refuses to delete a segment while another on-device session points to it:
 
 The portal's **Records** section provides the guarded browser equivalent: it
 shows the rolling-store reserve and logical chains, supports CRC-validated raw
-downloads, and authorizes whole-run removal only after every segment has been
-saved and read back through the file-system picker. **Analyze** opens one or
-more `.slog` files entirely offline, groups only unambiguous continuations, and
-shows an eight-probe SVG timeline with explicit unknown-duration gaps. The
-selected run can be exported as CSV or as an Excel `.xlsx` workbook; both keep
-segment-relative time and mark unknown power gaps instead of inventing elapsed
-time. See
+downloads, and prefers whole-run removal only after every segment has been
+saved and read back through the file-system picker. Browsers without that API
+can use an explicit, strongly warned override after Quick downloading every
+segment; the portal CRC-checks the transfer and compares fresh device bytes
+again immediately before deletion, but cannot prove the browser saved a copy.
+**Analyze** opens one or more `.slog` files entirely offline and groups only
+unambiguous continuations by default. The user can instead view each segment
+alone without changing its raw linkage metadata. It shows an eight-probe SVG
+timeline with explicit unknown-duration gaps and a selected-probe derivative
+chart on the same time axis. The selected view can be exported as CSV or as an
+Excel `.xlsx` workbook; both keep segment-relative time and mark unknown power
+gaps instead of inventing elapsed time. See
 [`docs/web-data-workspace.md`](docs/web-data-workspace.md) for the preservation
 and deletion gates and the export schema.
 

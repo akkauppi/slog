@@ -647,120 +647,141 @@ export class LogManager {
           !sameBytes(archived, receiptState.bytes)) {
         throw new PreservationError("preserved raw log changed after verification");
       }
-
-      const status = await this._statusUnlocked();
-      if (!status.filesystemReady) throw new LogDeviceError("fs_unavailable");
-      if (status.active) {
-        throw new LogDeviceError("active_session", "logs cannot be deleted during an active session");
-      }
-      if (status.commissioning || status.restartRequired) {
-        throw new LogDeviceError(
-          "configuration_unresolved",
-          "logs cannot be deleted while commissioning or restart is unresolved",
-        );
-      }
-      if (!status.retention.auditOk) {
-        throw new LogDeviceError(
-          "retention_audit_unavailable",
-          "logs cannot be deleted while the retention audit is unavailable",
-        );
-      }
-      if (status.retention.catalogInvalid || status.retention.catalogOverflow) {
-        throw new LogDeviceError(
-          "retention_catalog_invalid",
-          "logs cannot be deleted while the logger catalog is invalid or incomplete",
-        );
-      }
-      if (status.retention.pendingSegment || status.retention.pendingRun) {
-        throw new LogDeviceError(
-          "retention_pending",
-          "logs cannot be deleted while automatic retention is pending",
-        );
-      }
-      if (status.continuationPendingSessionId === null) {
-        throw new LogDeviceError(
-          "firmware_update_required",
-          "firmware does not expose the continuation protection needed for safe deletion",
-        );
-      }
-
-      const sessions = await this._listUnlocked();
-      const catalog = inspectContinuationCatalog(sessions);
-      if (!catalog.valid) {
-        throw new LogDeviceError(
-          "catalog_invalid",
-          "session relationships are inconsistent; deletion is disabled",
-        );
-      }
-      const listed = sessions.find((entry) => entry.id === receiptState.sessionId);
-      if (!listed) throw new LogDeviceError("not_found");
-      if (listed.bytes !== receiptState.bytes.byteLength) {
-        throw new PreservationError("device log size changed after preservation");
-      }
-      if (sessions.some((entry) => entry.continuationOf === receiptState.sessionId)) {
-        throw new LogDeviceError(
-          "continuation_exists",
-          "delete continuation segments from newest to oldest",
-        );
-      }
-      if (status.continuationPendingSessionId) {
-        const rootOf = (id) => {
-          const seen = new Set();
-          let current = sessions.find((entry) => entry.id === id);
-          if (!current) return null;
-          while (current.continuationOf) {
-            if (seen.has(current.id)) return null;
-            seen.add(current.id);
-            current = sessions.find((entry) => entry.id === current.continuationOf);
-            if (!current) return null;
-          }
-          return current.id;
-        };
-        const pendingRoot = rootOf(status.continuationPendingSessionId);
-        const selectedRoot = rootOf(receiptState.sessionId);
-        if (pendingRoot === null || selectedRoot === null) {
-          throw new LogDeviceError(
-            "continuation_state_invalid",
-            "logger continuation state does not match its session catalog",
-          );
-        }
-        if (pendingRoot === selectedRoot) {
-          throw new LogDeviceError(
-            "probable_continuation",
-            "this run may still be continued after power restoration",
-          );
-        }
-      }
-
-      const current = await this._downloadUnlocked(receiptState.sessionId);
-      const currentState = DOWNLOAD_STATE.get(current);
-      if (currentState.crc32 !== receiptState.crc32 ||
-          !sameBytes(currentState.bytes, receiptState.bytes)) {
-        throw new PreservationError("device log no longer matches the preserved raw log");
-      }
-
-      try {
-        // From this point onward even a rejected write may have put some or all
-        // command bytes on USB. Only an explicit, matching acknowledgement can
-        // establish the outcome.
-        await this.transport.writeLine(`LOG DELETE ${receiptState.sessionId}`);
-        const message = await this._readSingleLogMessage("LOG_DELETE", "LOG DELETE");
-        const acknowledgedId = unsigned(message, "id", UINT32_MAX);
-        if (acknowledgedId !== receiptState.sessionId) {
-          throw new ProtocolError("LOG_DELETE acknowledged the wrong session id");
-        }
-        if (!booleanField(message, "ok")) {
-          throw new LogDeviceError("delete_failed", "logger did not confirm deletion");
-        }
-      } catch (error) {
-        // A syntactically valid device refusal proves that this command did not
-        // remove the session. Every other missing/untrusted ack is ambiguous.
-        if (error instanceof LogDeviceError) throw error;
-        throw new DeletionOutcomeUncertainError(receiptState.sessionId, { cause: error });
-      }
+      await this._deleteVerifiedState(receiptState);
       receiptState.used = true;
       return Object.freeze({ sessionId: receiptState.sessionId });
     });
+  }
+
+  deleteDownloaded(download) {
+    const downloadState = DOWNLOAD_STATE.get(download);
+    if (!downloadState || downloadState.owner !== this) {
+      return Promise.reject(new PreservationError(
+        "override deletion requires a verified download from this browser flow",
+      ));
+    }
+    const expected = {
+      sessionId: downloadState.sessionId,
+      crc32: downloadState.crc32,
+      bytes: downloadState.bytes.slice(),
+    };
+    return this._enqueue(async () => {
+      await this._deleteVerifiedState(expected);
+      return Object.freeze({ sessionId: expected.sessionId });
+    });
+  }
+
+  async _deleteVerifiedState(expected) {
+    const status = await this._statusUnlocked();
+    if (!status.filesystemReady) throw new LogDeviceError("fs_unavailable");
+    if (status.active) {
+      throw new LogDeviceError("active_session", "logs cannot be deleted during an active session");
+    }
+    if (status.commissioning || status.restartRequired) {
+      throw new LogDeviceError(
+        "configuration_unresolved",
+        "logs cannot be deleted while commissioning or restart is unresolved",
+      );
+    }
+    if (!status.retention.auditOk) {
+      throw new LogDeviceError(
+        "retention_audit_unavailable",
+        "logs cannot be deleted while the retention audit is unavailable",
+      );
+    }
+    if (status.retention.catalogInvalid || status.retention.catalogOverflow) {
+      throw new LogDeviceError(
+        "retention_catalog_invalid",
+        "logs cannot be deleted while the logger catalog is invalid or incomplete",
+      );
+    }
+    if (status.retention.pendingSegment || status.retention.pendingRun) {
+      throw new LogDeviceError(
+        "retention_pending",
+        "logs cannot be deleted while automatic retention is pending",
+      );
+    }
+    if (status.continuationPendingSessionId === null) {
+      throw new LogDeviceError(
+        "firmware_update_required",
+        "firmware does not expose the continuation protection needed for safe deletion",
+      );
+    }
+
+    const sessions = await this._listUnlocked();
+    const catalog = inspectContinuationCatalog(sessions);
+    if (!catalog.valid) {
+      throw new LogDeviceError(
+        "catalog_invalid",
+        "session relationships are inconsistent; deletion is disabled",
+      );
+    }
+    const listed = sessions.find((entry) => entry.id === expected.sessionId);
+    if (!listed) throw new LogDeviceError("not_found");
+    if (listed.bytes !== expected.bytes.byteLength) {
+      throw new PreservationError("device log size changed after validation");
+    }
+    if (sessions.some((entry) => entry.continuationOf === expected.sessionId)) {
+      throw new LogDeviceError(
+        "continuation_exists",
+        "delete continuation segments from newest to oldest",
+      );
+    }
+    if (status.continuationPendingSessionId) {
+      const rootOf = (id) => {
+        const seen = new Set();
+        let current = sessions.find((entry) => entry.id === id);
+        if (!current) return null;
+        while (current.continuationOf) {
+          if (seen.has(current.id)) return null;
+          seen.add(current.id);
+          current = sessions.find((entry) => entry.id === current.continuationOf);
+          if (!current) return null;
+        }
+        return current.id;
+      };
+      const pendingRoot = rootOf(status.continuationPendingSessionId);
+      const selectedRoot = rootOf(expected.sessionId);
+      if (pendingRoot === null || selectedRoot === null) {
+        throw new LogDeviceError(
+          "continuation_state_invalid",
+          "logger continuation state does not match its session catalog",
+        );
+      }
+      if (pendingRoot === selectedRoot) {
+        throw new LogDeviceError(
+          "probable_continuation",
+          "this run may still be continued after power restoration",
+        );
+      }
+    }
+
+    const current = await this._downloadUnlocked(expected.sessionId);
+    const currentState = DOWNLOAD_STATE.get(current);
+    if (currentState.crc32 !== expected.crc32 ||
+        !sameBytes(currentState.bytes, expected.bytes)) {
+      throw new PreservationError("device log no longer matches the validated download");
+    }
+
+    try {
+      // From this point onward even a rejected write may have put some or all
+      // command bytes on USB. Only an explicit, matching acknowledgement can
+      // establish the outcome.
+      await this.transport.writeLine(`LOG DELETE ${expected.sessionId}`);
+      const message = await this._readSingleLogMessage("LOG_DELETE", "LOG DELETE");
+      const acknowledgedId = unsigned(message, "id", UINT32_MAX);
+      if (acknowledgedId !== expected.sessionId) {
+        throw new ProtocolError("LOG_DELETE acknowledged the wrong session id");
+      }
+      if (!booleanField(message, "ok")) {
+        throw new LogDeviceError("delete_failed", "logger did not confirm deletion");
+      }
+    } catch (error) {
+      // A syntactically valid device refusal proves that this command did not
+      // remove the session. Every other missing/untrusted ack is ambiguous.
+      if (error instanceof LogDeviceError) throw error;
+      throw new DeletionOutcomeUncertainError(expected.sessionId, { cause: error });
+    }
   }
 
   _enqueue(operation) {

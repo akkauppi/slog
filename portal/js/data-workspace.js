@@ -93,7 +93,7 @@ export function groupCatalogSessions(input) {
   );
 }
 
-function decimate(points, maximum) {
+function decimate(points, maximum, valueOf = (point) => point.temperatureC) {
   if (points.length <= maximum) return points;
   const result = [points[0]];
   const buckets = Math.max(1, Math.floor((maximum - 2) / 2));
@@ -105,8 +105,8 @@ function decimate(points, maximum) {
     let minimum = points[start];
     let maximumPoint = points[start];
     for (let index = start + 1; index < end; index += 1) {
-      if (points[index].temperatureC < minimum.temperatureC) minimum = points[index];
-      if (points[index].temperatureC > maximumPoint.temperatureC) maximumPoint = points[index];
+      if (valueOf(points[index]) < valueOf(minimum)) minimum = points[index];
+      if (valueOf(points[index]) > valueOf(maximumPoint)) maximumPoint = points[index];
     }
     if (minimum.observedSeconds <= maximumPoint.observedSeconds) {
       result.push(minimum);
@@ -152,6 +152,60 @@ export function buildProbeSeries(run, probeIndex, maximumPoints = 900) {
   }
   if (piece.length) pieces.push(Object.freeze(decimate(piece, maximumPoints)));
   return Object.freeze(pieces);
+}
+
+/** A centered local derivative for one probe, split wherever its temperature trace splits. */
+export function buildProbeRateSeries(run, probeIndex, windowSeconds = 60, maximumPoints = 900) {
+  if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) {
+    throw new TypeError("rate window must be positive");
+  }
+  const radius = windowSeconds / 2;
+  const rates = [];
+  for (const temperatures of buildProbeSeries(run, probeIndex, Infinity)) {
+    const piece = [];
+    let left = 0;
+    let right = 0;
+    for (let center = 0; center < temperatures.length; center += 1) {
+      const centerTime = temperatures[center].observedSeconds;
+      while (left < temperatures.length && temperatures[left].observedSeconds < centerTime - radius) {
+        left += 1;
+      }
+      right = Math.max(right, center);
+      while (
+        right + 1 < temperatures.length &&
+        temperatures[right + 1].observedSeconds <= centerTime + radius
+      ) {
+        right += 1;
+      }
+      const sampleCount = right - left + 1;
+      if (sampleCount < 2) continue;
+      let timeMean = 0;
+      let temperatureMean = 0;
+      for (let index = left; index <= right; index += 1) {
+        timeMean += temperatures[index].observedSeconds / 60;
+        temperatureMean += temperatures[index].temperatureC;
+      }
+      timeMean /= sampleCount;
+      temperatureMean /= sampleCount;
+      let numerator = 0;
+      let denominator = 0;
+      for (let index = left; index <= right; index += 1) {
+        const timeDelta = temperatures[index].observedSeconds / 60 - timeMean;
+        numerator += timeDelta * (temperatures[index].temperatureC - temperatureMean);
+        denominator += timeDelta ** 2;
+      }
+      if (denominator === 0) continue;
+      piece.push(Object.freeze({
+        observedSeconds: centerTime,
+        rateCPerMin: numerator / denominator,
+        segment: temperatures[center].segment,
+      }));
+    }
+    if (piece.length) {
+      rates.push(Object.freeze(decimate(piece, maximumPoints, (point) => point.rateCPerMin)));
+    }
+  }
+  return Object.freeze(rates);
 }
 
 export function formatBytes(value) {
@@ -251,6 +305,9 @@ export class DataWorkspace {
     this.chains = [];
     this.receipts = new Map();
     this.downloads = new Map();
+    this.quickDownloads = new Set();
+    this.analysisSource = null;
+    this.groupLinkedSegments = true;
     this.analysisRuns = [];
     this.selectedRun = 0;
     this.pendingRemoval = null;
@@ -276,15 +333,20 @@ export class DataWorkspace {
     this.analysisIssues = requiredElement(document, "analysis-group-issues");
     this.analysisOutput = requiredElement(document, "analysis-output");
     this.runSelect = requiredElement(document, "analysis-run-select");
+    this.groupSegmentsButton = requiredElement(document, "analysis-group-segments");
+    this.groupingNote = requiredElement(document, "analysis-grouping-note");
     this.exportCsvButton = requiredElement(document, "analysis-export-csv");
     this.exportExcelButton = requiredElement(document, "analysis-export-excel");
     this.probeSelect = requiredElement(document, "analysis-probe-select");
     this.chart = requiredElement(document, "analysis-chart");
+    this.rateChart = requiredElement(document, "analysis-rate-chart");
     this.gapNote = requiredElement(document, "analysis-gap-note");
     this.probeTable = requiredElement(document, "analysis-probe-table");
     this.integrityList = requiredElement(document, "analysis-integrity-list");
     this.removeDialog = requiredElement(document, "remove-run-dialog");
     this.removeDescription = requiredElement(document, "remove-run-description");
+    this.removeWarning = requiredElement(document, "remove-run-warning");
+    this.confirmRemoveButton = requiredElement(document, "confirm-remove-run");
 
     for (const button of this.navButtons) {
       button.addEventListener("click", () => this.requestView(button.dataset.portalView));
@@ -298,10 +360,16 @@ export class DataWorkspace {
     });
     this.exportCsvButton.addEventListener("click", () => this.downloadRunExport("csv"));
     this.exportExcelButton.addEventListener("click", () => this.downloadRunExport("xlsx"));
+    this.groupSegmentsButton.addEventListener("click", () => {
+      this.groupLinkedSegments = !this.groupLinkedSegments;
+      this.rebuildAnalysisRuns();
+    });
     this.probeSelect.addEventListener("change", () => this.renderChart());
     this.removeDialog.addEventListener("close", () => {
       if (this.removeDialog.returnValue === "confirm" && this.pendingRemoval) {
-        void this.removeRun(this.pendingRemoval);
+        void this.removeRun(this.pendingRemoval.chain, {
+          allowUnverified: this.pendingRemoval.allowUnverified,
+        });
       }
       this.pendingRemoval = null;
     });
@@ -356,6 +424,7 @@ export class DataWorkspace {
       this.deviceInfo = connection.info;
       this.receipts.clear();
       this.downloads.clear();
+      this.quickDownloads.clear();
       this.recordsIdentity.textContent = `${connection.info.firmware} · ${connection.info.ota}`;
       this.onActivity(`Records opened for verified ${connection.info.product} ${connection.info.firmware}`);
       await this.refreshUnlocked();
@@ -383,6 +452,7 @@ export class DataWorkspace {
     this.chains = [];
     this.receipts.clear();
     this.downloads.clear();
+    this.quickDownloads.clear();
     this.recordsIdentity.textContent = "Not connected";
     this.storageSummary.hidden = true;
     this.retentionNote.hidden = true;
@@ -410,6 +480,7 @@ export class DataWorkspace {
     this.status = status;
     this.catalog = catalog;
     this.downloads.clear();
+    this.quickDownloads.clear();
     const currentReceiptKeys = new Set(catalog.map(sessionReceiptKey));
     for (const key of this.receipts.keys()) {
       if (!currentReceiptKeys.has(key)) this.receipts.delete(key);
@@ -552,14 +623,18 @@ export class DataWorkspace {
       );
       analyze.disabled = !this.canTransfer();
       actions.append(analyze);
-      const remove = this.actionButton("Remove run from logger", "button--quiet", () => this.confirmRemove(chain));
       const removal = this.removalReadiness(chain);
+      const remove = this.actionButton(
+        removal.allowUnverified ? "Remove with unverified copies" : "Remove run from logger",
+        "button--quiet",
+        () => this.confirmRemove(chain),
+      );
       remove.disabled = !removal.ready;
       remove.title = removal.ready ? "" : removal.reason;
       actions.append(remove);
       article.append(actions);
 
-      if (!removal.ready) {
+      if (removal.reason) {
         const explanation = this.document.createElement("p");
         explanation.className = "record-chain__removal-note";
         explanation.textContent = removal.reason;
@@ -593,7 +668,12 @@ export class DataWorkspace {
       : "Root";
     const archive = this.document.createElement("td");
     const receipt = this.receipts.get(sessionReceiptKey(session));
-    archive.textContent = receipt ? `Verified · ${receipt.filename}` : "No verified copy";
+    const quickDownloaded = this.quickDownloads.has(sessionReceiptKey(session));
+    archive.textContent = receipt
+      ? `Verified · ${receipt.filename}`
+      : quickDownloaded
+        ? "Downloaded · not verified"
+        : "No verified copy";
     archive.dataset.state = receipt ? "ready" : "attention";
     const action = this.document.createElement("td");
     action.className = "record-actions";
@@ -623,37 +703,49 @@ export class DataWorkspace {
   }
 
   removalReadiness(chain) {
-    if (!chain.safe) return { ready: false, reason: chain.issue };
-    if (!this.manager) return { ready: false, reason: "Connect the logger before removal." };
-    if (this.status?.active) return { ready: false, reason: "Removal is disabled while recording." };
+    const blocked = (reason) => ({ ready: false, reason, allowUnverified: false });
+    if (!chain.safe) return blocked(chain.issue);
+    if (!this.manager) return blocked("Connect the logger before removal.");
+    if (this.status?.active) return blocked("Removal is disabled while recording.");
     if (this.status?.commissioning || this.status?.restartRequired) {
-      return { ready: false, reason: "Finish or recover probe setup before removal." };
+      return blocked("Finish or recover probe setup before removal.");
     }
     if (this.status?.continuationPendingSessionId === null) {
-      return { ready: false, reason: "Update the logger firmware before removal; safe continuation state is not available." };
+      return blocked("Update the logger firmware before removal; safe continuation state is not available.");
     }
     if (this.status?.retention.pendingSegment || this.status?.retention.pendingRun) {
-      return { ready: false, reason: "Automatic retention is incomplete; let the logger finish that journal before manual removal." };
+      return blocked("Automatic retention is incomplete; let the logger finish that journal before manual removal.");
     }
     if (!this.status?.retention.auditOk || this.status?.retention.catalogInvalid || this.status?.retention.catalogOverflow) {
-      return { ready: false, reason: "Resolve the device retention audit before manual removal." };
+      return blocked("Resolve the device retention audit before manual removal.");
     }
     if (
       this.status?.continuationPendingSessionId &&
       chain.sessionIds.includes(this.status.continuationPendingSessionId)
     ) {
-      return { ready: false, reason: "This interrupted run is protected as a probable hot-start continuation." };
+      return blocked("This interrupted run is protected as a probable hot-start continuation.");
     }
     const missing = chain.sessions.filter(
       (session) => !this.receipts.has(sessionReceiptKey(session)),
     );
     if (missing.length) {
-      const capability = typeof this.window.showSaveFilePicker === "function"
-        ? `Save and verify every segment first (missing ${missing.map((session) => `#${session.id}`).join(", ")}).`
-        : "This browser cannot verify saved files. Quick downloads are available, but removal stays disabled.";
-      return { ready: false, reason: capability };
+      const quickMissing = missing.filter((session) =>
+        !this.quickDownloads.has(sessionReceiptKey(session)) || !this.downloads.has(session)
+      );
+      if (quickMissing.length) {
+        const ids = quickMissing.map((session) => `#${session.id}`).join(", ");
+        const capability = typeof this.window.showSaveFilePicker === "function"
+          ? `Save and verify every segment, or Quick download every segment to use the removal override (missing ${ids}).`
+          : `Quick download every segment first. You can then explicitly remove the run without verified saved copies (missing ${ids}).`;
+        return blocked(capability);
+      }
+      return {
+        ready: true,
+        reason: "One or more saved copies are not verified. Removal requires an explicit override.",
+        allowUnverified: true,
+      };
     }
-    return { ready: true, reason: "" };
+    return { ready: true, reason: "", allowUnverified: false };
   }
 
   beginOperation(kind) {
@@ -742,10 +834,11 @@ export class DataWorkspace {
       link.download = download.suggestedName;
       link.click();
       this.window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      this.quickDownloads.add(sessionReceiptKey(session));
       this.onActivity(`Created CRC-validated browser download for session ${session.id}`);
       setStatus(
         this.recordsMessage,
-        `Session ${session.id} passed its CRC check and was downloaded. The browser does not let this page verify the saved file, so this download does not enable removal.`,
+        `Session ${session.id} passed its CRC check and Quick download was requested. The browser cannot verify the saved file; removal is available only through the explicit unverified-copy override.`,
         "success",
       );
     } catch (error) {
@@ -785,16 +878,39 @@ export class DataWorkspace {
   confirmRemove(chain) {
     const readiness = this.removalReadiness(chain);
     if (!readiness.ready || this.operation) return;
-    this.pendingRemoval = chain;
-    this.removeDescription.textContent = `Run ${chain.sessionIds.map((id) => `#${id}`).join(" → ")} contains ${chain.sessions.length} saved and verified segment${chain.sessions.length === 1 ? "" : "s"}. Removal from the logger cannot be undone.`;
+    this.pendingRemoval = Object.freeze({
+      chain,
+      allowUnverified: readiness.allowUnverified,
+    });
+    const run = chain.sessionIds.map((id) => `#${id}`).join(" → ");
+    const unverifiedCount = chain.sessions.filter(
+      (session) => !this.receipts.has(sessionReceiptKey(session)),
+    ).length;
+    this.removeDescription.textContent = readiness.allowUnverified
+      ? `Run ${run} has ${unverifiedCount} of ${chain.sessions.length} segment${chain.sessions.length === 1 ? "" : "s"} available only through CRC-checked Quick download. The browser cannot verify that ${unverifiedCount === 1 ? "this file was" : "these files were"} saved.`
+      : `Run ${run} contains ${chain.sessions.length} saved and verified segment${chain.sessions.length === 1 ? "" : "s"}. Removal from the logger cannot be undone.`;
+    this.removeWarning.textContent = readiness.allowUnverified
+      ? "One or more saved copies have not been verified. Removing the run may permanently delete the only recoverable copy. The logger still removes linked segments newest first."
+      : "Every segment has a verified local copy. The logger removes the newest segment first. If power is lost, older valid segments may remain.";
+    this.removeWarning.dataset.state = readiness.allowUnverified ? "danger" : "verified";
+    this.confirmRemoveButton.textContent = readiness.allowUnverified
+      ? "Remove with unverified copies"
+      : "Remove run from logger";
     this.removeDialog.returnValue = "";
     this.removeDialog.showModal();
   }
 
-  async removeRun(chain) {
+  async removeRun(chain, { allowUnverified = false } = {}) {
     const readiness = this.removalReadiness(chain);
-    if (!readiness.ready || this.operation) return;
+    if (
+      !readiness.ready ||
+      Boolean(readiness.allowUnverified) !== allowUnverified ||
+      this.operation
+    ) return;
     this.beginOperation("delete");
+    const localCopyState = allowUnverified
+      ? "Local files were not changed; one or more browser-downloaded copies were not verified."
+      : "Your verified local files were not changed.";
     let removed = 0;
     let attempted = null;
     let failure = null;
@@ -802,14 +918,22 @@ export class DataWorkspace {
     try {
       for (const session of [...chain.sessions].reverse()) {
         attempted = session;
-        setStatus(this.recordsMessage, `Verifying saved session ${session.id} again, then removing it…`);
-        await this.manager.deletePreserved(
-          this.receipts.get(sessionReceiptKey(session)),
+        const receipt = this.receipts.get(sessionReceiptKey(session));
+        setStatus(
+          this.recordsMessage,
+          receipt
+            ? `Verifying saved session ${session.id} again, then removing it…`
+            : `Re-checking downloaded session ${session.id}, then removing it without a verified saved copy…`,
         );
+        if (receipt) await this.manager.deletePreserved(receipt);
+        else await this.manager.deleteDownloaded(this.downloads.get(session)?.download);
         removed += 1;
         this.receipts.delete(sessionReceiptKey(session));
+        this.quickDownloads.delete(sessionReceiptKey(session));
         this.downloads.delete(session);
-        this.onActivity(`Removed preserved session ${session.id} from logger`);
+        this.onActivity(receipt
+          ? `Removed preserved session ${session.id} from logger`
+          : `Removed session ${session.id} using the unverified-copy override`);
         attempted = null;
       }
     } catch (error) {
@@ -823,7 +947,7 @@ export class DataWorkspace {
       this.endOperation();
       if (refreshFailure) {
         const preceding = failure instanceof DeletionOutcomeUncertainError
-          ? `Deletion confirmation for session ${failure.sessionId} was lost. Your verified local files were not changed.`
+          ? `Deletion confirmation for session ${failure.sessionId} was lost. ${localCopyState}`
           : failure
             ? friendlyError(failure)
             : "Removal acknowledgements completed.";
@@ -843,6 +967,7 @@ export class DataWorkspace {
           if (uncertainSessionIsAbsent && uncertainSession) {
             removed += 1;
             this.receipts.delete(sessionReceiptKey(uncertainSession));
+            this.quickDownloads.delete(sessionReceiptKey(uncertainSession));
             this.downloads.delete(uncertainSession);
           }
           const remaining = chain.sessions.filter((session) =>
@@ -855,7 +980,7 @@ export class DataWorkspace {
               : `The refreshed catalog still lists session ${uncertainSessionId}; ${remaining} segment${remaining === 1 ? " remains" : "s remain"} from this run.`;
           setStatus(
             this.recordsMessage,
-            `Deletion confirmation for session ${uncertainSessionId} was lost. ${refreshedState} Your verified local files were not changed.`,
+            `Deletion confirmation for session ${uncertainSessionId} was lost. ${refreshedState} ${localCopyState}`,
             refreshedCatalogTrusted && remaining === 0 ? "success" : "error",
           );
         } else {
@@ -871,14 +996,14 @@ export class DataWorkspace {
             : "No earlier segment removal was acknowledged before this refusal.";
           setStatus(
             this.recordsMessage,
-            `${friendlyError(failure)} ${acknowledgedState} ${catalogState} Saved raw files were not changed.`,
+            `${friendlyError(failure)} ${acknowledgedState} ${catalogState} ${localCopyState}`,
             "error",
           );
         }
       } else {
         setStatus(
           this.recordsMessage,
-          `Removed all ${removed} segments newest to oldest. Saved raw files were not changed.`,
+          `Removed all ${removed} segments newest to oldest. ${localCopyState}`,
           "success",
         );
       }
@@ -916,6 +1041,10 @@ export class DataWorkspace {
   }
 
   loadIsolatedSession(session, reason) {
+    this.analysisSource = null;
+    this.groupSegmentsButton.hidden = true;
+    this.groupingNote.hidden = true;
+    this.groupingNote.textContent = "";
     const run = buildRun([session]);
     this.analysisRuns = [Object.freeze({
       run,
@@ -945,13 +1074,63 @@ export class DataWorkspace {
   }
 
   loadParsedSessions(sessions, names = [], failures = []) {
+    this.analysisSource = Object.freeze({
+      sessions: Object.freeze([...sessions]),
+      names: Object.freeze([...names]),
+      failures: Object.freeze([...failures]),
+    });
+    this.groupLinkedSegments = true;
+    this.rebuildAnalysisRuns();
+  }
+
+  rebuildAnalysisRuns() {
+    const source = this.analysisSource;
+    if (!source) return;
+    const { sessions, failures } = source;
     this.analysisRuns = [];
     this.selectedRun = 0;
     this.analysisIssues.hidden = true;
     this.analysisIssues.replaceChildren();
+    const canChooseGrouping = sessions.length > 1;
+    this.groupSegmentsButton.hidden = !canChooseGrouping;
+    this.groupSegmentsButton.textContent = this.groupLinkedSegments
+      ? "Show segments separately"
+      : "Group linked segments";
+    this.groupingNote.hidden = !canChooseGrouping;
+    this.groupingNote.textContent = this.groupLinkedSegments
+      ? "Linked segments are combined using their recorded continuation metadata."
+      : "Each segment is analyzed alone. Recorded continuation metadata and logger removal are unchanged.";
     if (sessions.length === 0) {
       this.analysisOutput.hidden = true;
       setStatus(this.analysisMessage, failures.join(" ") || "No valid sauna log was opened.", "error");
+      return;
+    }
+
+    if (!this.groupLinkedSegments) {
+      this.analysisRuns = sessions.map((session) => {
+        const run = buildRun([session]);
+        return Object.freeze({
+          run,
+          analysis: analyzeRun(run),
+          displayLabel: `Session #${session.sessionId}`,
+          manualSplit: true,
+        });
+      });
+      if (failures.length) {
+        const heading = this.document.createElement("h3");
+        heading.textContent = "Files rejected";
+        const list = this.document.createElement("ul");
+        for (const failure of failures) {
+          const item = this.document.createElement("li");
+          item.textContent = failure;
+          list.append(item);
+        }
+        this.analysisIssues.append(heading, list);
+        this.analysisIssues.hidden = false;
+      }
+      this.finishAnalysisLoad(
+        `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"} separately. Continuation metadata is unchanged.`,
+      );
       return;
     }
 
@@ -1001,6 +1180,12 @@ export class DataWorkspace {
       this.analysisIssues.hidden = false;
     }
 
+    this.finishAnalysisLoad(
+      `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"}: ${grouped.runs.length} complete run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} ungrouped segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
+    );
+  }
+
+  finishAnalysisLoad(message) {
     if (this.analysisRuns.length === 0) {
       this.analysisOutput.hidden = true;
       setStatus(
@@ -1018,11 +1203,8 @@ export class DataWorkspace {
       option.textContent = item.displayLabel ?? item.analysis.label;
       this.runSelect.append(option);
     }
-    setStatus(
-      this.analysisMessage,
-      `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"}: ${grouped.runs.length} complete run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} ungrouped segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
-      "success",
-    );
+    this.runSelect.value = "0";
+    setStatus(this.analysisMessage, message, "success");
     this.renderAnalysis();
   }
 
@@ -1045,7 +1227,7 @@ export class DataWorkspace {
       ? `${warningCount} item${warningCount === 1 ? "" : "s"} to review`
       : "CRC-valid and finalized";
     this.renderChart();
-    this.renderIntegrity(run, analysis, selected.isolatedReason);
+    this.renderIntegrity(run, analysis, selected.isolatedReason, selected.manualSplit);
   }
 
   downloadRunExport(format) {
@@ -1116,7 +1298,7 @@ export class DataWorkspace {
     }
   }
 
-  renderIntegrity(run, analysis, isolatedReason = "") {
+  renderIntegrity(run, analysis, isolatedReason = "", manualSplit = false) {
     this.integrityList.replaceChildren();
     const blocks = run.sessions.reduce((sum, session) => sum + session.integrity.validBlockCount, 0);
     const records = run.sessions.reduce((sum, session) => sum + session.integrity.committedRecordCount, 0);
@@ -1130,6 +1312,9 @@ export class DataWorkspace {
     ];
     if (isolatedReason) {
       items.push(`${isolatedReason} This segment is analyzed alone; linked time outside it is excluded.`);
+    }
+    if (manualSplit) {
+      items.push("This segment is shown separately by your choice. Recorded continuation metadata is unchanged.");
     }
     if (ignored) items.push(`${ignored} trailing byte${ignored === 1 ? " was" : "s were"} ignored after the last complete CRC-valid structure.`);
     if (analysis.unknown_gap_count) {
@@ -1167,10 +1352,12 @@ export class DataWorkspace {
       }
     }
     this.chart.replaceChildren();
+    this.rateChart.replaceChildren();
     if (!run.points.length || validTemperatureCount === 0) {
       this.gapNote.hidden = true;
       this.gapNote.textContent = "";
       this.chart.append(this.emptyState("No committed temperature samples are available."));
+      this.rateChart.append(this.emptyState("No derivative is available."));
       return;
     }
 
@@ -1190,6 +1377,7 @@ export class DataWorkspace {
       this.gapNote.hidden = true;
       this.gapNote.textContent = "";
       this.chart.append(this.emptyState("Committed sample timestamps are invalid."));
+      this.rateChart.append(this.emptyState("No derivative is available."));
       return;
     }
     const xMax = xMaxRaw > xMin ? xMaxRaw : xMin + 1;
@@ -1265,10 +1453,123 @@ export class DataWorkspace {
     });
     svg.append(gaps);
     this.chart.append(svg);
+    this.renderRateChart(run, selectedProbe, { xMin, xMax, width, margin });
 
     this.gapNote.hidden = run.breaks.length === 0;
     this.gapNote.textContent = run.breaks.length
       ? `${run.breaks.length} continuation boundar${run.breaks.length === 1 ? "y has" : "ies have"} unknown duration and is excluded from observed time. A vertical marker is shown wherever the boundary can be placed.`
       : "";
+  }
+
+  renderRateChart(run, selectedProbe, domain) {
+    const pieces = buildProbeRateSeries(run, selectedProbe);
+    const rates = pieces.flatMap((piece) => piece.map((point) => point.rateCPerMin));
+    if (rates.length === 0) {
+      this.rateChart.append(this.emptyState(
+        `P${selectedProbe + 1} needs at least two contiguous samples for a derivative.`,
+      ));
+      return;
+    }
+
+    const { xMin, xMax, width } = domain;
+    const height = 260;
+    const margin = { ...domain.margin, bottom: 50 };
+    const plotWidth = width - margin.left - margin.right;
+    const plotHeight = height - margin.top - margin.bottom;
+    const maximumMagnitude = Math.max(1, ...rates.map((value) => Math.abs(value)));
+    const scale = 10 ** Math.floor(Math.log10(maximumMagnitude));
+    const yLimit = Math.ceil((maximumMagnitude / scale) * 2) * scale / 2;
+    const x = (value) => margin.left + ((value - xMin) / (xMax - xMin)) * plotWidth;
+    const y = (value) => margin.top + ((yLimit - value) / (2 * yLimit)) * plotHeight;
+    const svg = svgElement(this.document, "svg", {
+      viewBox: `0 0 ${width} ${height}`,
+      role: "img",
+      "aria-labelledby": "rate-title rate-description",
+    });
+    const title = svgElement(this.document, "title", { id: "rate-title" });
+    title.textContent = `P${selectedProbe + 1} temperature derivative`;
+    const description = svgElement(this.document, "desc", { id: "rate-description" });
+    description.textContent = "Degrees Celsius per minute from a centered 60-second linear trend. The time axis matches the temperature timeline, and no line crosses missing readings or unknown gaps.";
+    svg.append(title, description);
+
+    const grid = svgElement(this.document, "g", { class: "timeline__grid", "aria-hidden": "true" });
+    for (let tick = 0; tick <= 4; tick += 1) {
+      const rate = -yLimit + (2 * yLimit * tick) / 4;
+      const yy = y(rate);
+      grid.append(svgElement(this.document, "line", {
+        x1: margin.left,
+        y1: yy,
+        x2: width - margin.right,
+        y2: yy,
+        "data-zero": String(Math.abs(rate) < Number.EPSILON),
+      }));
+      const label = svgElement(this.document, "text", {
+        x: margin.left - 10,
+        y: yy + 4,
+        "text-anchor": "end",
+      });
+      label.textContent = `${rate.toFixed(yLimit < 2 ? 1 : 0)} °C/min`;
+      grid.append(label);
+    }
+    for (let tick = 0; tick <= 4; tick += 1) {
+      const seconds = xMin + ((xMax - xMin) * tick) / 4;
+      const xx = x(seconds);
+      grid.append(svgElement(this.document, "line", {
+        x1: xx,
+        y1: margin.top,
+        x2: xx,
+        y2: height - margin.bottom,
+      }));
+      const label = svgElement(this.document, "text", {
+        x: xx,
+        y: height - 23,
+        "text-anchor": "middle",
+      });
+      label.textContent = formatDuration(seconds);
+      grid.append(label);
+    }
+    const axisLabel = svgElement(this.document, "text", {
+      x: margin.left + plotWidth / 2,
+      y: height - 3,
+      "text-anchor": "middle",
+    });
+    axisLabel.textContent = "Observed time (matched to temperature timeline)";
+    grid.append(axisLabel);
+    svg.append(grid);
+
+    const traces = svgElement(this.document, "g", { class: "timeline__traces", "aria-hidden": "true" });
+    for (const piece of pieces) {
+      if (piece.length === 1) {
+        traces.append(svgElement(this.document, "circle", {
+          class: "timeline__trace",
+          "data-selected": "true",
+          cx: x(piece[0].observedSeconds).toFixed(2),
+          cy: y(piece[0].rateCPerMin).toFixed(2),
+          r: 2.5,
+        }));
+      } else {
+        traces.append(svgElement(this.document, "path", {
+          class: "timeline__trace",
+          "data-selected": "true",
+          d: piece.map((point, index) =>
+            `${index ? "L" : "M"}${x(point.observedSeconds).toFixed(2)},${y(point.rateCPerMin).toFixed(2)}`
+          ).join(" "),
+        }));
+      }
+    }
+    svg.append(traces);
+
+    const gaps = svgElement(this.document, "g", { class: "timeline__gaps", "aria-hidden": "true" });
+    for (const gap of run.breaks.filter((item) => Number.isFinite(item.observedSeconds))) {
+      const xx = x(gap.observedSeconds);
+      gaps.append(svgElement(this.document, "line", {
+        x1: xx,
+        y1: margin.top,
+        x2: xx,
+        y2: height - margin.bottom,
+      }));
+    }
+    svg.append(gaps);
+    this.rateChart.append(svg);
   }
 }

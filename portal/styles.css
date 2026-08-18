@@ -958,6 +958,7 @@ tbody tr[data-current="true"] > th {
 .analysis-export {
   display: flex;
   align-items: end;
+  flex-wrap: wrap;
   gap: 0.6rem;
 }
 
@@ -978,8 +979,19 @@ select {
   margin-block: 1.5rem 2.5rem;
 }
 
+.analysis-grouping-note {
+  max-width: var(--measure);
+  margin: 0.8rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .timeline-heading {
   margin-bottom: 0.8rem;
+}
+
+.timeline-heading--rate {
+  margin-top: 2rem;
 }
 
 .timeline {
@@ -1002,6 +1014,11 @@ select {
 .timeline__grid line {
   stroke: #deded8;
   stroke-width: 1;
+}
+
+.timeline__grid line[data-zero="true"] {
+  stroke: var(--ink);
+  stroke-width: 1.4;
 }
 
 .timeline__grid text,
@@ -1338,6 +1355,12 @@ dialog::backdrop {
 
 dialog h2 {
   max-width: 20ch;
+}
+
+#remove-run-warning[data-state="danger"] {
+  padding: 0.8rem;
+  border-left: 3px solid var(--accent);
+  background: #f1e6e1;
 }
 
 @media (max-width: 899px) {

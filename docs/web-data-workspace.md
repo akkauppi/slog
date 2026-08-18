@@ -28,6 +28,19 @@ or duration calculation crosses it. The selected probe uses the portal accent
 and the other seven stay gray. The table is the accessible source for exact
 per-probe peak, mean, missing-sample, and heating-rate summaries.
 
+When multiple valid files are open, **Show segments separately** rebuilds the
+analysis so each physical `.slog` is its own selectable view. This is useful
+when a hot start or end measurement should be interpreted independently. The
+choice is reversible and affects only analysis and export: the files' recorded
+continuation metadata is not edited, and device removal still treats linked
+segments as one run.
+
+The heating and cooling rate chart shows only the selected probe in °C/min. At
+each sample it fits a centered 60-second linear trend, using only contiguous
+valid readings. It never fits or draws through a missing reading or an unknown
+continuation gap. Its observed-time domain, plot margins, and x ticks match the
+temperature timeline above it.
+
 The start summary calls out an already-hot or partially captured start. This is
 descriptive, not a claim about the unobserved heating period. Raw `.slog` files
 remain the source of truth.
@@ -66,18 +79,26 @@ There are two download paths:
   it byte for byte. Only that manager-issued receipt can authorize removal.
 - **Quick download** works where the file-system picker is unavailable. The
   bytes are still CRC-validated and may be analyzed, but the browser cannot
-  prove where the download was saved, so it never authorizes deletion.
+  prove where the download was saved. After every unverified segment in a run
+  has been Quick downloaded, the portal offers a clearly labeled removal
+  override instead of presenting the copies as verified.
 
-Removal is available only when every segment of an unambiguous logical run has
-an unused verified-save receipt. A confirmation names the entire chain, and
-segments are removed newest to oldest. The portal also blocks removal during
-recording, unresolved commissioning/restart state, journaled automatic
-retention, an unsafe catalog, or a probable hot-start continuation. It does not
-offer format, bulk erase, or crash-dump erase.
+Normal removal requires an unused verified-save receipt for every segment of an
+unambiguous logical run. The override requires a CRC-validated Quick download
+for every segment without such a receipt and an explicit confirmation that one
+or more saved copies were not verified. Both paths re-read the current device
+file and compare it with the earlier validated bytes immediately before
+deletion. A confirmation names the entire chain, and segments are removed
+newest to oldest. The portal also blocks both paths during recording,
+unresolved commissioning/restart
+state, journaled automatic retention, an unsafe catalog, or a probable
+hot-start continuation. It does not offer format, bulk erase, or crash-dump
+erase.
 
-Receipts exist only in the connected page and are cleared on disconnect or
-reload. A later visit must read each saved file back through a new preservation
-operation; ordinary download history is intentionally not trusted.
+Receipts exist only in the connected page. Quick-download override state is
+also temporary and is cleared on catalog refresh, disconnect, or reload. A
+later visit must repeat the relevant download or preservation operation;
+ordinary browser download history is intentionally not trusted.
 
 Switching portal sections, applying a service-worker update, closing the page,
 or disconnecting is blocked during a transfer or removal. Probe setup and

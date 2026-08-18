@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   DataWorkspace,
+  buildProbeRateSeries,
   buildProbeSeries,
   groupCatalogSessions,
 } from "../../portal/js/data-workspace.js";
@@ -196,9 +197,33 @@ test("bounded chart decimation retains local extrema and endpoints", () => {
   assert.ok(series.some((value) => value.temperatureC === 5));
 });
 
+test("selected-probe derivative uses degrees per minute and never crosses missing data or gaps", () => {
+  const run = {
+    points: [
+      point(0, 20, 0),
+      point(10, 21, 0),
+      point(20, null, 0),
+      point(30, 23, 0),
+      point(40, 24, 0),
+      point(50, 25, 1),
+      point(60, 26, 1),
+    ],
+    breaks: [{ afterSegment: 0, beforeSegment: 1, observedSeconds: 45 }],
+  };
+  const rates = buildProbeRateSeries(run, 0);
+  assert.deepEqual(
+    rates.map((piece) => piece.map((value) => value.observedSeconds)),
+    [[0, 10], [30, 40], [50, 60]],
+  );
+  for (const sample of rates.flat()) {
+    assert.ok(Math.abs(sample.rateCPerMin - 6) < 1e-9);
+  }
+});
+
 test("an empty selected run refreshes the probe table before chart fallback", () => {
   const rendered = [];
   const chartChildren = [];
+  const rateChildren = [];
   const context = {
     analysisRuns: [{
       run: {
@@ -220,6 +245,14 @@ test("an empty selected run refreshes the probe table before chart fallback", ()
         chartChildren.push(child);
       },
     },
+    rateChart: {
+      replaceChildren() {
+        rateChildren.length = 0;
+      },
+      append(child) {
+        rateChildren.push(child);
+      },
+    },
     gapNote: { hidden: false, textContent: "stale gap" },
     emptyState(text) {
       return { text };
@@ -230,8 +263,66 @@ test("an empty selected run refreshes the probe table before chart fallback", ()
 
   assert.deepEqual(rendered, [context.analysisRuns[0].analysis]);
   assert.deepEqual(chartChildren, [{ text: "No committed temperature samples are available." }]);
+  assert.deepEqual(rateChildren, [{ text: "No derivative is available." }]);
   assert.equal(context.gapNote.hidden, true);
   assert.equal(context.gapNote.textContent, "");
+});
+
+test("removal override requires a CRC-validated Quick download for every unverified segment", () => {
+  const first = catalogEntry(10);
+  const second = catalogEntry(11, 10);
+  const chain = Object.freeze({
+    safe: true,
+    sessions: Object.freeze([first, second]),
+    sessionIds: Object.freeze([10, 11]),
+  });
+  const key = (session) => [
+    session.id,
+    session.bytes,
+    session.state,
+    session.version,
+    session.bootId,
+    session.continuationOf,
+    session.continuationKind,
+  ].join(":");
+  const context = {
+    manager: {},
+    window: {},
+    status: {
+      active: false,
+      commissioning: false,
+      restartRequired: false,
+      continuationPendingSessionId: 0,
+      retention: {
+        pendingSegment: 0,
+        pendingRun: 0,
+        auditOk: true,
+        catalogInvalid: false,
+        catalogOverflow: false,
+      },
+    },
+    receipts: new Map(),
+    quickDownloads: new Set([key(first)]),
+    downloads: new Map([[first, { download: {} }]]),
+  };
+
+  let readiness = DataWorkspace.prototype.removalReadiness.call(context, chain);
+  assert.equal(readiness.ready, false);
+  assert.match(readiness.reason, /missing #11/i);
+
+  context.quickDownloads.add(key(second));
+  context.downloads.set(second, { download: {} });
+  readiness = DataWorkspace.prototype.removalReadiness.call(context, chain);
+  assert.deepEqual(readiness, {
+    ready: true,
+    reason: "One or more saved copies are not verified. Removal requires an explicit override.",
+    allowUnverified: true,
+  });
+
+  context.status.continuationPendingSessionId = 10;
+  readiness = DataWorkspace.prototype.removalReadiness.call(context, chain);
+  assert.equal(readiness.ready, false);
+  assert.match(readiness.reason, /protected/i);
 });
 
 test("lost delete confirmation reports the refreshed catalog without changing local-file claims", async () => {
@@ -256,7 +347,18 @@ test("lost delete confirmation reports the refreshed catalog without changing lo
       },
     },
     catalog: [session],
-    receipts: new Map(),
+    receipts: new Map([[
+      [
+        session.id,
+        session.bytes,
+        session.state,
+        session.version,
+        session.bootId,
+        session.continuationOf,
+        session.continuationKind,
+      ].join(":"),
+      {},
+    ]]),
     downloads: new Map(),
     recordsMessage: message,
     removalReadiness: () => ({ ready: true, reason: "" }),
@@ -289,12 +391,14 @@ test("portal offers guarded preservation and whole-chain newest-first removal", 
   assert.match(source, /\[\.\.\.chain\.sessions\]\.reverse\(\)/);
   assert.match(
     source,
-    /deletePreserved\([\s\S]*?this\.receipts\.get\(sessionReceiptKey\(session\)\)/,
+    /const receipt = this\.receipts\.get\(sessionReceiptKey\(session\)\)[\s\S]*?deletePreserved\(receipt\)/,
   );
+  assert.match(source, /deleteDownloaded\(this\.downloads\.get\(session\)\?\.download\)/);
   assert.match(source, /groupCatalogSessions\(catalog\)/);
   assert.doesNotMatch(source, /groupCatalogSessions\(\[\.\.\.catalog\]\)/);
   assert.match(source, /failure instanceof DeletionOutcomeUncertainError/);
-  assert.match(source, /Deletion confirmation for session[\s\S]*?verified local files were not changed/i);
+  assert.match(source, /localCopyState = allowUnverified[\s\S]*?verified local files were not changed/i);
+  assert.match(source, /Deletion confirmation for session[\s\S]*?\$\{localCopyState\}/);
   assert.doesNotMatch(source, /nothing was removed/i);
   assert.doesNotMatch(source, /LOG FORMAT|LOG CRASH ERASE|rawBytes.*diagnostic/i);
 });

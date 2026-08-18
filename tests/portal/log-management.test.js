@@ -529,6 +529,58 @@ test("only exact read-back preservation issues a same-flow deletion receipt", as
   await transport.close();
 });
 
+test("explicit download override revalidates the same bytes before deletion", async () => {
+  const bytes = Uint8Array.of(4, 2, 4, 2, 1, 7);
+  const responses = new Map([
+    ["LOG STATUS", [framed(statusLine())]],
+    ["LOG LIST", [framed(
+      "LOG_LIST_BEGIN",
+      sessionLine(1, { bytes: bytes.length }),
+      "LOG_LIST_END",
+    )]],
+    ["LOG GET 1", [framed(downloadLines(1, bytes))]],
+    ["LOG DELETE 1", [framed("LOG_DELETE id=1 ok=1")]],
+  ]);
+  const { manager, port, transport } = await openManager(responses);
+  const download = await manager.download(1);
+  assert.deepEqual(await manager.deleteDownloaded(download), { sessionId: 1 });
+  assert.deepEqual(port.commands, [
+    "LOG STATUS",
+    "LOG GET 1",
+    "LOG STATUS",
+    "LOG LIST",
+    "LOG GET 1",
+    "LOG DELETE 1",
+  ]);
+
+  const other = await openManager(new Map());
+  await assert.rejects(other.manager.deleteDownloaded(download), /this browser flow/);
+  await other.transport.close();
+  await transport.close();
+});
+
+test("download override rejects changed device bytes before LOG DELETE", async () => {
+  const original = Uint8Array.of(1, 3, 3, 7);
+  const changed = Uint8Array.of(1, 3, 3, 8);
+  let gets = 0;
+  const responses = new Map([
+    ["LOG STATUS", [framed(statusLine())]],
+    ["LOG LIST", [framed(
+      "LOG_LIST_BEGIN",
+      sessionLine(1, { bytes: original.length }),
+      "LOG_LIST_END",
+    )]],
+    ["LOG GET 1", () => [framed(downloadLines(1, gets++ ? changed : original))]],
+  ]);
+  const { manager, port, transport } = await openManager(responses);
+  await assert.rejects(
+    manager.deleteDownloaded(await manager.download(1)),
+    /no longer matches/,
+  );
+  assert.ok(!port.commands.includes("LOG DELETE 1"));
+  await transport.close();
+});
+
 test("archive or device byte changes prevent deletion without sending LOG DELETE", async (t) => {
   const original = Uint8Array.of(10, 20, 30, 40, 50);
 
