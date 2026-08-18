@@ -563,7 +563,7 @@ function showConnect({ afterInstall = false } = {}) {
     kicker: "Stage 2 · Verify logger",
     title: afterInstall ? "Reconnect the running logger" : "Verify the running logger",
     description: afterInstall
-      ? "The installer pulsed reset and closed the bootloader connection. Release BOOT, wait for the application port, then choose it. If it stays silent, press RESET once without holding BOOT; if necessary, remove all USB and external power before reconnecting."
+      ? "Release BOOT and wait for the logger port to appear, then choose it. If it does not appear, press RESET once without holding BOOT."
       : "Choose the logger running the project firmware. Close PlatformIO, a serial monitor, or any other application using the port.",
   });
   configureAction(primaryAction, {
@@ -835,8 +835,8 @@ function showInspection(message = "") {
     setStep("connect");
     setTask({
       kicker: "Current configuration",
-      title: "Probe map already installed",
-      description: `Generation ${configuration.generation} is active. Starting setup pauses automatic logging, but this map remains stored until a new map is verified.`,
+      title: "Probe order already installed",
+      description: `Generation ${configuration.generation} is active. Starting setup pauses automatic logging, but the current probe order stays in use until a new one is verified.`,
       message:
         message ||
         (storageRead(PENDING_STORAGE_KEY)
@@ -844,7 +844,7 @@ function showInspection(message = "") {
           : ""),
     });
     configureAction(primaryAction, {
-      label: "Replace probe map",
+      label: "Replace probe order",
       handler: () => showMethodChoice(true),
       hidden: false,
     });
@@ -860,9 +860,9 @@ function showInspection(message = "") {
   if (detail === "ambiguous") {
     setTask({
       kicker: "Configuration blocked",
-      title: "Conflicting probe maps found",
+      title: "Conflicting probe orders found",
       description:
-        "The logger contains two conflicting valid probe maps. Do not erase it. Preserve the logger and its logs for recovery.",
+        "The logger contains two conflicting valid probe orders. Do not erase it. Keep the logger and its logs for recovery.",
     });
     return;
   }
@@ -871,7 +871,7 @@ function showInspection(message = "") {
       kicker: "Configuration blocked",
       title: "Probe storage is unavailable",
       description:
-        "Restart the logger once. If this remains, preserve the logger and its logs for service rather than erasing flash.",
+        "Restart the logger once. If this remains, keep the logger and its logs for service rather than erasing flash.",
     });
     configureAction(primaryAction, {
       label: "Restart and inspect",
@@ -884,10 +884,10 @@ function showInspection(message = "") {
   setStep("connect");
   setTask({
     kicker: "Logger ready",
-    title: detail === "corrupt" ? "Replace the damaged probe map" : "No probe map installed",
+      title: detail === "corrupt" ? "Replace the damaged probe order" : "No probe order installed",
     description:
       detail === "corrupt"
-        ? "The stored probe map is damaged, so session logging is disabled. A new verified map can replace it."
+        ? "The stored probe order is damaged, so recording is disabled. A new verified order can replace it."
         : "Session logging remains disabled until all eight physical positions have been identified and verified.",
     message,
   });
@@ -902,7 +902,7 @@ function showPendingVerification(match) {
   setStep("verify");
   setTask({
     kicker: "Setup recovery",
-    title: "Finish verifying the saved probe map",
+    title: "Finish verifying the saved probe order",
     description:
       `The active generation ${match.generation} has the same complete P1–P8 order saved by this browser. Run one fresh eight-probe bus check before treating it as verified.`,
     message:
@@ -988,9 +988,9 @@ function showMethodChoice(replaceExisting) {
   setStep("prepare");
   setTask({
     kicker: "Step 2 · Method",
-    title: "Identify probes without disconnecting them",
+    title: "Identify probes while they stay connected",
     description:
-      "For an assembled logger, keep all eight probes wired and warm their metal tips one at a time. The bench method is only for a loose harness whose probes can be connected without soldering.",
+      "For an assembled logger, keep all eight probes connected and hold each metal tip between your fingers when prompted. Use the bench method only when probes can be connected one at a time.",
   });
   setExpected("Recommended: assembled probes · no wiring changes");
   configureAction(primaryAction, {
@@ -1073,14 +1073,14 @@ function showWarmPrepare(message = "") {
   setStep("prepare");
   setTask({
     kicker: "Step 2 · Prepare assembled probes",
-    title: "Let all eight probes settle",
+    title: "Let all eight probes reach room temperature",
     description:
-      "Keep every probe connected. Do this before heating the sauna, stop touching the metal tips, and let each probe hold a steady temperature. The probes do not need to read exactly the same.",
+      "Keep every probe connected and leave the metal tips untouched. Do this before the sauna starts warming. The readings do not need to be identical.",
     message,
   });
-  setExpected("Expected: 8 connected probes · each stable within 0.5 °C");
+  setExpected("Ready when: 8 probes connected · each stable within 0.5 °C");
   configureAction(primaryAction, {
-    label: "Learn five-scan baseline",
+    label: "Record baseline",
     handler: learnWarmBaseline,
     hidden: false,
   });
@@ -1109,9 +1109,9 @@ function warmCandidateMessage(result) {
   }
   const candidate = result.candidates?.at(-1);
   if (!candidate) {
-    return `P${result.position} was not identified. Keep warming only that tip, then check again.`;
+    return `P${result.position} was not identified. Warm only that tip a little longer, then check again.`;
   }
-  return `Not clear yet · strongest rise ${candidate.riseC.toFixed(1)} °C · lead ${candidate.marginC.toFixed(1)} °C. Keep warming only P${result.position}, then check again.`;
+  return `Not clear yet · strongest rise ${candidate.riseC.toFixed(1)} °C · lead ${candidate.marginC.toFixed(1)} °C. Warm only P${result.position} a little longer, then check again.`;
 }
 
 function showWarmIdentify(lastResult = null) {
@@ -1127,15 +1127,15 @@ function showWarmIdentify(lastResult = null) {
   setStep("identify");
   setTask({
     kicker: `Step 3 · Identify assembled probes · ${snapshot.mappedRoms.length} of 8`,
-    title: `Warm the metal tip of P${position}`,
+    title: `Warm P${position} between your fingers`,
     description:
-      `${location} · ${height}. Keep every wire connected. Warm only this tip by hand or with a warm, not hot, cloth; then check it. Previously identified probes may remain warm.`,
+      `${location} · ${height}. Keep every wire connected. Hold only this probe's metal tip between your fingers until it feels warmer, then check it. You do not need to cool probes already identified.`,
     message: warmCandidateMessage(lastResult),
     messageKind: lastResult?.accepted ? "success" : "info",
   });
-  setExpected("Required twice: rise ≥ 3.0 °C · clear lead ≥ 1.0 °C");
+  setExpected("The same tip must be detected twice · at least 3.0 °C warmer · at least 1.0 °C ahead");
   configureAction(primaryAction, {
-    label: `Check warmed P${position}`,
+    label: `Check P${position}`,
     handler: identifyNextWarm,
     hidden: false,
   });
@@ -1303,7 +1303,7 @@ function showWriting() {
   setStep("verify");
   setTask({
     kicker: "Step 5 · Write and verify",
-    title: "Writing probe map",
+    title: "Saving probe order",
     description:
       "Keep USB connected. If power is interrupted, reconnect and this page will inspect the stored result.",
   });
@@ -1735,7 +1735,7 @@ function initializeServiceWorker() {
     try {
       const registration = await navigator.serviceWorker.register(
         "./service-worker.js",
-        { scope: "./" },
+        { scope: "./", updateViaCache: "none" },
       );
       if (registration.waiting) showWaitingUpdate(registration.waiting);
       registration.addEventListener("updatefound", () => {

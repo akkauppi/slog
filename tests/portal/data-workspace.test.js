@@ -10,6 +10,11 @@ import {
   groupCatalogSessions,
 } from "../../portal/js/data-workspace.js";
 import { DeletionOutcomeUncertainError } from "../../portal/js/log-management.js";
+import {
+  createRunWorkbook,
+  runExportFilename,
+  serializeRunCsv,
+} from "../../portal/js/session-export.js";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -37,6 +42,69 @@ function point(observedSeconds, temperatureC, segment = 0) {
     temperaturesC: Object.freeze([temperatureC, null, null, null, null, null, null, null]),
   });
 }
+
+function exportRun() {
+  return {
+    sessions: [{ sessionId: 10 }, { sessionId: 11 }],
+    sensors: Array.from({ length: 8 }, (_, index) => ({
+      rom: `28FF0000000000${index}`,
+      relativeHeightCm: index * -20,
+    })),
+    breaks: [{
+      afterSegment: 0,
+      beforeSegment: 1,
+      continuationKind: "probable_power_restore",
+      durationSeconds: null,
+    }],
+    points: [
+      {
+        observedSeconds: 0,
+        segment: 0,
+        sessionId: 10,
+        relativeSeconds: 0,
+        temperaturesC: [40, 39, 38, 37, 36, 35, 34, null],
+        chipTemperatureC: 28.5,
+        statusFlags: 0,
+      },
+      {
+        observedSeconds: 0,
+        segment: 1,
+        sessionId: 11,
+        relativeSeconds: -590,
+        temperaturesC: [41, 40, 39, 38, 37, 36, 35, 34],
+        chipTemperatureC: 29,
+        statusFlags: 2,
+      },
+    ],
+  };
+}
+
+test("CSV export keeps segment time and marks unknown power gaps", () => {
+  const csv = serializeRunCsv(exportRun());
+  const lines = csv.trim().replace(/^\ufeff/, "").split("\r\n");
+  assert.match(lines[0], /observed_seconds_excluding_unknown_gaps/);
+  assert.equal(lines.length, 3);
+  assert.equal(lines[1].split(",")[4], "");
+  assert.equal(lines[2].split(",")[3], "-590");
+  assert.equal(lines[2].split(",")[4], "yes");
+  assert.equal(lines[1].split(",")[12], "");
+  assert.equal(runExportFilename(exportRun(), "CSV"), "sauna-run-10-11.csv");
+});
+
+test("Excel export is an XLSX package with measurements, probes, and gaps", () => {
+  const workbook = createRunWorkbook(exportRun());
+  assert.equal(new DataView(workbook.buffer).getUint32(0, true), 0x04034b50);
+  assert.equal(
+    new DataView(workbook.buffer).getUint32(workbook.length - 22, true),
+    0x06054b50,
+  );
+  const packageText = new TextDecoder().decode(workbook);
+  assert.match(packageText, /Measurements/);
+  assert.match(packageText, /Probes/);
+  assert.match(packageText, /Gaps/);
+  assert.match(packageText, /probable_power_restore/);
+  assert.match(packageText, /unknown/);
+});
 
 test("device catalog forms only validated root-to-leaf chains", () => {
   const root = catalogEntry(10);

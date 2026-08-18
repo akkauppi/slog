@@ -32,6 +32,25 @@ The start summary calls out an already-hot or partially captured start. This is
 descriptive, not a claim about the unobserved heating period. Raw `.slog` files
 remain the source of truth.
 
+### Export session data
+
+After selecting a run, **Export CSV** downloads one row per committed sample.
+It includes compressed observed time, the one-based segment number, session ID,
+original session-relative time, an `unknown_gap_before` marker, P1–P8
+temperatures, logger chip temperature, and sample status flags. The observed
+time column explicitly excludes unknown power-off durations; use the session
+and gap columns whenever segment boundaries matter.
+
+**Export Excel** creates a standard `.xlsx` workbook locally with three sheets:
+
+- **Measurements** contains the same sample table as the CSV.
+- **Probes** records each P1–P8 relative height and ROM address.
+- **Gaps** lists continuation boundaries, their kind, and whether the duration
+  is known.
+
+Exports are derived convenience files. Preserve the CRC-checked `.slog` files
+as the source of truth.
+
 ## Preserve and remove device records
 
 **Records** first verifies `SYS INFO` against the supported sauna logger
@@ -42,10 +61,10 @@ while a session is active.
 
 There are two download paths:
 
-- **Preserve raw file** uses `showSaveFilePicker`, downloads and CRC-validates
+- **Save and verify** uses `showSaveFilePicker`, downloads and CRC-validates
   the device bytes, writes the selected file, then reads it back and compares
   it byte for byte. Only that manager-issued receipt can authorize removal.
-- **Browser download** works where the file-system picker is unavailable. The
+- **Quick download** works where the file-system picker is unavailable. The
   bytes are still CRC-validated and may be analyzed, but the browser cannot
   prove where the download was saved, so it never authorizes deletion.
 

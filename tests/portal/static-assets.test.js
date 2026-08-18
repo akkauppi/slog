@@ -84,7 +84,7 @@ test("the portal has no third-party runtime assets", async () => {
   assert.equal(new Set(ids).size, ids.length, "HTML ids must be unique");
   assert.match(html, /id="task-title" tabindex="-1"/);
   assert.match(html, /id="transaction-notice"[\s\S]*?role="status"/);
-  assert.match(html, /<summary>Advanced mode<\/summary>/);
+  assert.match(html, /<summary>Technical details<\/summary>/);
   assert.match(html, /id="copy-transcript"/);
   assert.match(html, /id="download-diagnostics"/);
   assert.match(html, /id="clear-transcript"/);
@@ -116,6 +116,8 @@ test("the portal has no third-party runtime assets", async () => {
   assert.match(html, /data-portal-view="prepare"/);
   assert.match(html, /data-portal-view="records"/);
   assert.match(html, /data-portal-view="analyze"/);
+  assert.match(html, /id="analysis-export-csv"/);
+  assert.match(html, /id="analysis-export-excel"/);
 });
 
 test("assembled-probe commissioning is the primary portal workflow", async () => {
@@ -129,8 +131,8 @@ test("assembled-probe commissioning is the primary portal workflow", async () =>
     /label: "Bench: connect one at a time"[\s\S]*?startSetup\(replaceExisting, CommissioningMethod\.CONNECT\)/,
   );
   assert.match(source, /Keep every probe connected/);
-  assert.match(source, /Learn five-scan baseline/);
-  assert.match(source, /Check warmed P\$\{position\}/);
+  assert.match(source, /label: "Record baseline"/);
+  assert.match(source, /Check P\$\{position\}/);
   assert.match(
     source,
     /new WebSerialTransport\(port,[\s\S]*?suppressRxUntilDrained:\s*true/,
@@ -268,6 +270,16 @@ test("manifest colors and service-worker cache use the portal release tokens", a
   assert.equal(declaredRevision[1], digest.digest("hex").slice(0, 12));
   assert.match(worker, /cache\.match\(request\)/);
   assert.doesNotMatch(worker, /caches\.match\(request\)/);
+  assert.ok(
+    worker.indexOf("const cached = await cache.match(request)") <
+      worker.indexOf("return await fetch(request)"),
+    "the active app-shell cache must be checked before fetching a loose asset",
+  );
+  assert.doesNotMatch(
+    worker,
+    /cache\.put\(request/,
+    "an active worker must not mix newer loose assets into its app-shell cache",
+  );
   assert.match(
     worker,
     /url\.href\.startsWith\(FIRMWARE_ROOT\)[\s\S]*?event\.respondWith\(fetch\(request\)\);[\s\S]*?return;/,

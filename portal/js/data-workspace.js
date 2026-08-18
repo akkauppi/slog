@@ -12,6 +12,11 @@ import {
   PreservationError,
   inspectContinuationCatalog,
 } from "./log-management.js";
+import {
+  createRunWorkbook,
+  runExportFilename,
+  serializeRunCsv,
+} from "./session-export.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const VIEW_NAMES = Object.freeze(["prepare", "records", "analyze"]);
@@ -196,9 +201,9 @@ function friendlyError(error) {
       continuation_exists: "A newer continuation still exists. The portal removes whole runs newest to oldest.",
       configuration_unresolved: "Finish or recover probe setup before removing records.",
       firmware_update_required: "Update the logger firmware before removal; it does not expose continuation protection.",
-      catalog_invalid: "The continuation catalog is inconsistent. Raw download remains available, but removal is disabled.",
-      retention_audit_unavailable: "The logger retention audit is unavailable. Raw download remains available, but removal is disabled.",
-      retention_catalog_invalid: "The logger retention catalog is invalid or incomplete. Raw download remains available, but removal is disabled.",
+      catalog_invalid: "The run list is inconsistent. You can still download raw files, but removal is disabled.",
+      retention_audit_unavailable: "The logger could not verify its retention state. You can still download raw files, but removal is disabled.",
+      retention_catalog_invalid: "The logger's run list is invalid or incomplete. You can still download raw files, but removal is disabled.",
       retention_pending: "Automatic retention is incomplete. Reconnect or restart the logger so it can finish before manual removal.",
       continuation_state_invalid: "Continuation protection does not match the record catalog. Nothing further was removed.",
       fs_unavailable: "The logger filesystem is unavailable. It is not formatted automatically.",
@@ -271,6 +276,8 @@ export class DataWorkspace {
     this.analysisIssues = requiredElement(document, "analysis-group-issues");
     this.analysisOutput = requiredElement(document, "analysis-output");
     this.runSelect = requiredElement(document, "analysis-run-select");
+    this.exportCsvButton = requiredElement(document, "analysis-export-csv");
+    this.exportExcelButton = requiredElement(document, "analysis-export-excel");
     this.probeSelect = requiredElement(document, "analysis-probe-select");
     this.chart = requiredElement(document, "analysis-chart");
     this.gapNote = requiredElement(document, "analysis-gap-note");
@@ -289,6 +296,8 @@ export class DataWorkspace {
       this.selectedRun = Number(this.runSelect.value);
       this.renderAnalysis();
     });
+    this.exportCsvButton.addEventListener("click", () => this.downloadRunExport("csv"));
+    this.exportExcelButton.addEventListener("click", () => this.downloadRunExport("xlsx"));
     this.probeSelect.addEventListener("change", () => this.renderChart());
     this.removeDialog.addEventListener("close", () => {
       if (this.removeDialog.returnValue === "confirm" && this.pendingRemoval) {
@@ -366,7 +375,7 @@ export class DataWorkspace {
     }
   }
 
-  handleConnectionClosed(message = "Logger disconnected. Reconnect to refresh its record catalog.") {
+  handleConnectionClosed(message = "Logger disconnected. Reconnect to refresh its file list.") {
     this.manager = null;
     this.deviceInfo = null;
     this.status = null;
@@ -377,7 +386,7 @@ export class DataWorkspace {
     this.recordsIdentity.textContent = "Not connected";
     this.storageSummary.hidden = true;
     this.retentionNote.hidden = true;
-    this.recordsCount.textContent = "No catalog loaded";
+    this.recordsCount.textContent = "No file list loaded";
     this.recordsCatalog.replaceChildren(this.emptyState("Connect a logger to inspect its records."));
     if (this.activeView === "records") setStatus(this.recordsMessage, message, "error");
     this.updateControls();
@@ -411,7 +420,7 @@ export class DataWorkspace {
     if (status.active) {
       setStatus(
         this.recordsMessage,
-        `Session ${status.activeSessionId} is recording. Catalog inspection is available, but transfers and removal stay disabled until it ends.`,
+        `Session ${status.activeSessionId} is recording. You can view the file list, but downloads and removal stay disabled until recording ends.`,
       );
     } else if (!status.filesystemReady) {
       setStatus(this.recordsMessage, "The logger filesystem is unavailable and was not formatted.", "error");
@@ -443,7 +452,7 @@ export class DataWorkspace {
       );
     }
     if (status.continuationPendingSessionId) {
-      notes.push(`The logical run containing session ${status.continuationPendingSessionId} is protected as a probable hot-start continuation.`);
+      notes.push(`The run containing session ${status.continuationPendingSessionId} is protected because the next hot start may continue it.`);
     } else if (status.continuationPendingSessionId === null) {
       notes.push("This firmware does not expose safe continuation eligibility; manual removal is disabled until it is updated.");
     }
@@ -477,12 +486,12 @@ export class DataWorkspace {
     this.recordsCatalog.replaceChildren();
     const inspection = inspectContinuationCatalog(this.catalog);
     this.recordsCount.textContent = inspection.valid
-      ? `${this.chains.length} logical run${this.chains.length === 1 ? "" : "s"} · ${this.catalog.length} segment${this.catalog.length === 1 ? "" : "s"} · oldest first`
-      : `${this.catalog.length} valid ungrouped entr${this.catalog.length === 1 ? "y" : "ies"} · ${inspection.issues.length} catalog issue${inspection.issues.length === 1 ? "" : "s"}`;
+      ? `${this.chains.length} run${this.chains.length === 1 ? "" : "s"} · ${this.catalog.length} segment${this.catalog.length === 1 ? "" : "s"} · oldest first`
+      : `${this.catalog.length} valid ungrouped file${this.catalog.length === 1 ? "" : "s"} · ${inspection.issues.length} list issue${inspection.issues.length === 1 ? "" : "s"}`;
     if (!inspection.valid) {
       const issue = this.document.createElement("p");
       issue.className = "retention-note";
-      issue.textContent = `The device catalog is unsafe: ${catalogIssuesText(inspection.issues)}. Valid entries remain downloadable, but logical grouping and removal are disabled.`;
+      issue.textContent = `The logger's file list is inconsistent: ${catalogIssuesText(inspection.issues)}. Valid files can still be downloaded, but grouping and removal are disabled.`;
       this.recordsCatalog.append(issue);
     }
     if (this.chains.length === 0) {
@@ -502,8 +511,8 @@ export class DataWorkspace {
       const label = this.document.createElement("p");
       label.className = "section-label";
       label.textContent = chain.safe
-        ? `Logical run ${chainIndex + 1}`
-        : `Catalog entry ${chainIndex + 1}`;
+        ? `Run ${chainIndex + 1}`
+        : `Ungrouped file ${chainIndex + 1}`;
       const title = this.document.createElement("h3");
       title.textContent = chain.sessionIds.map((id) => `#${id}`).join(" → ");
       titleGroup.append(label, title);
@@ -527,7 +536,7 @@ export class DataWorkspace {
       tableWrap.className = "table-wrap";
       const table = this.document.createElement("table");
       const head = this.document.createElement("thead");
-      head.innerHTML = "<tr><th scope=\"col\">Segment</th><th scope=\"col\">State</th><th scope=\"col\">Size</th><th scope=\"col\">Continuation</th><th scope=\"col\">Archive</th><th scope=\"col\">Action</th></tr>";
+      head.innerHTML = "<tr><th scope=\"col\">Segment</th><th scope=\"col\">State</th><th scope=\"col\">Size</th><th scope=\"col\">Continuation</th><th scope=\"col\">Saved copy</th><th scope=\"col\">Action</th></tr>";
       const body = this.document.createElement("tbody");
       for (const session of chain.sessions) body.append(this.renderSessionRow(session));
       table.append(head, body);
@@ -543,7 +552,7 @@ export class DataWorkspace {
       );
       analyze.disabled = !this.canTransfer();
       actions.append(analyze);
-      const remove = this.actionButton("Remove preserved run", "button--quiet", () => this.confirmRemove(chain));
+      const remove = this.actionButton("Remove run from logger", "button--quiet", () => this.confirmRemove(chain));
       const removal = this.removalReadiness(chain);
       remove.disabled = !removal.ready;
       remove.title = removal.ready ? "" : removal.reason;
@@ -584,20 +593,20 @@ export class DataWorkspace {
       : "Root";
     const archive = this.document.createElement("td");
     const receipt = this.receipts.get(sessionReceiptKey(session));
-    archive.textContent = receipt ? `Verified · ${receipt.filename}` : "Not verified saved";
+    archive.textContent = receipt ? `Verified · ${receipt.filename}` : "No verified copy";
     archive.dataset.state = receipt ? "ready" : "attention";
     const action = this.document.createElement("td");
     action.className = "record-actions";
     if (typeof this.window.showSaveFilePicker === "function") {
       const preserve = this.actionButton(
-        receipt ? "Preserve again" : "Preserve raw file",
+        receipt ? "Save again" : "Save and verify",
         "button--secondary",
         () => void this.preserveSession(session),
       );
       preserve.disabled = !this.canTransfer();
       action.append(preserve);
     }
-    const download = this.actionButton("Browser download", "button--quiet", () => void this.downloadSession(session));
+    const download = this.actionButton("Quick download", "button--quiet", () => void this.downloadSession(session));
     download.disabled = !this.canTransfer();
     action.append(download);
     row.append(id, state, size, continuation, archive, action);
@@ -640,8 +649,8 @@ export class DataWorkspace {
     );
     if (missing.length) {
       const capability = typeof this.window.showSaveFilePicker === "function"
-        ? `Preserve and verify every segment first (missing ${missing.map((session) => `#${session.id}`).join(", ")}).`
-        : "This browser cannot verify a saved file. Browser downloads remain available, but removal stays disabled.";
+        ? `Save and verify every segment first (missing ${missing.map((session) => `#${session.id}`).join(", ")}).`
+        : "This browser cannot verify saved files. Quick downloads are available, but removal stays disabled.";
       return { ready: false, reason: capability };
     }
     return { ready: true, reason: "" };
@@ -699,7 +708,7 @@ export class DataWorkspace {
         suggestedName: `session-${session.id}.slog`,
         excludeAcceptAllOption: true,
         types: [{
-          description: "Sauna logger raw record",
+          description: "Sauna logger raw file",
           accept: { "application/octet-stream": [".slog"] },
         }],
       });
@@ -707,10 +716,10 @@ export class DataWorkspace {
       const { download } = await this.validatedDownload(session);
       const receipt = await this.manager.preserveToFile(download, handle);
       this.receipts.set(sessionReceiptKey(session), receipt);
-      this.onActivity(`Preserved session ${session.id} after CRC and saved-file readback verification`);
+      this.onActivity(`Saved session ${session.id} after CRC and file readback verification`);
       setStatus(
         this.recordsMessage,
-        `Session ${session.id} was CRC-validated, saved as ${receipt.filename}, and read back byte for byte.`,
+        `Session ${session.id} was CRC-checked, saved as ${receipt.filename}, and verified byte for byte.`,
         "success",
       );
     } catch (error) {
@@ -736,7 +745,7 @@ export class DataWorkspace {
       this.onActivity(`Created CRC-validated browser download for session ${session.id}`);
       setStatus(
         this.recordsMessage,
-        `Session ${session.id} passed transfer CRC validation and was offered as a browser download. The portal cannot verify where this kind of download was saved, so it does not authorize removal.`,
+        `Session ${session.id} passed its CRC check and was downloaded. The browser does not let this page verify the saved file, so this download does not enable removal.`,
         "success",
       );
     } catch (error) {
@@ -777,7 +786,7 @@ export class DataWorkspace {
     const readiness = this.removalReadiness(chain);
     if (!readiness.ready || this.operation) return;
     this.pendingRemoval = chain;
-    this.removeDescription.textContent = `Run ${chain.sessionIds.map((id) => `#${id}`).join(" → ")} contains ${chain.sessions.length} preserved segment${chain.sessions.length === 1 ? "" : "s"}. This cannot be undone from the logger.`;
+    this.removeDescription.textContent = `Run ${chain.sessionIds.map((id) => `#${id}`).join(" → ")} contains ${chain.sessions.length} saved and verified segment${chain.sessions.length === 1 ? "" : "s"}. Removal from the logger cannot be undone.`;
     this.removeDialog.returnValue = "";
     this.removeDialog.showModal();
   }
@@ -996,7 +1005,7 @@ export class DataWorkspace {
       this.analysisOutput.hidden = true;
       setStatus(
         this.analysisMessage,
-        "The files were valid individually, but continuation metadata was incomplete or ambiguous. No logical run was inferred.",
+        "The files are valid, but their continuation links are incomplete or unclear, so they could not be grouped into a run.",
         "error",
       );
       return;
@@ -1011,7 +1020,7 @@ export class DataWorkspace {
     }
     setStatus(
       this.analysisMessage,
-      `Opened ${sessions.length} CRC-checked segment${sessions.length === 1 ? "" : "s"} as ${grouped.runs.length} linked run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} isolated segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
+      `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"}: ${grouped.runs.length} complete run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} ungrouped segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
       "success",
     );
     this.renderAnalysis();
@@ -1039,17 +1048,37 @@ export class DataWorkspace {
     this.renderIntegrity(run, analysis, selected.isolatedReason);
   }
 
+  downloadRunExport(format) {
+    const selected = this.analysisRuns[this.selectedRun];
+    if (!selected) return;
+    const { run } = selected;
+    const excel = format === "xlsx";
+    const contents = excel ? createRunWorkbook(run) : serializeRunCsv(run);
+    const type = excel
+      ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      : "text/csv;charset=utf-8";
+    const url = URL.createObjectURL(new Blob([contents], { type }));
+    const link = this.document.createElement("a");
+    link.href = url;
+    link.download = runExportFilename(run, excel ? "xlsx" : "csv");
+    link.click();
+    this.window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    const label = excel ? "Excel workbook" : "CSV file";
+    setStatus(this.analysisMessage, `${label} created for the selected run.`, "success");
+    this.onActivity(`Created ${label.toLowerCase()} for sessions ${run.sessions.map((session) => session.sessionId).join("->")}`);
+  }
+
   startDescription(analysis) {
     const state = analysis.start_state === "already_hot_or_warming"
-      ? "Hot start or already warming"
+      ? "Already hot or warming"
       : analysis.start_state === "below_trigger_at_first_sample"
-        ? "Pre-trigger captured below 40 °C"
+        ? "Started below 40 °C"
         : "No committed samples";
     const coverage = analysis.pretrigger_coverage === "full"
-      ? "full pre-trigger"
+      ? "full lead-in captured"
       : analysis.pretrigger_coverage === "partial"
-        ? "partial pre-trigger"
-        : "no pre-trigger";
+        ? "partial lead-in captured"
+        : "no lead-in captured";
     return `${state} · ${coverage}`;
   }
 

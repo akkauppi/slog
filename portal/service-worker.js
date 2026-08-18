@@ -1,6 +1,6 @@
 // CI verifies this value against the content of every APP_SHELL entry. A new
 // worker must never populate the cache still owned by an active transaction.
-const APP_SHELL_REVISION = "80a2db168b8a";
+const APP_SHELL_REVISION = "2711da401412";
 const CACHE_NAME = `sauna-commissioning-${APP_SHELL_REVISION}`;
 const APP_SHELL = [
   "./",
@@ -11,6 +11,7 @@ const APP_SHELL = [
   "./js/data-workspace.js",
   "./js/log-analysis.js",
   "./js/log-management.js",
+  "./js/session-export.js",
   "./js/flash-ui.js",
   "./js/flashing.js",
   "./js/recovery-store.js",
@@ -66,25 +67,20 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      let response;
+      const cached = await cache.match(request);
+      if (cached) return cached;
       try {
-        response = await fetch(request);
+        // APP_SHELL is populated during installation as one versioned set.
+        // Never refresh individual entries in an active worker's cache: doing
+        // so can combine modules from different releases if the server drops
+        // out partway through a page load.
+        return await fetch(request);
       } catch {
-        const cached = await cache.match(request);
-        if (cached) return cached;
         if (request.mode === "navigate") {
           return cache.match(scopedUrl("./index.html"));
         }
         throw new Error(`No offline response for ${request.url}`);
       }
-      if (response.ok) {
-        try {
-          await cache.put(request, response.clone());
-        } catch {
-          // A full/disabled cache must never replace a good network response.
-        }
-      }
-      return response;
     })(),
   );
 });

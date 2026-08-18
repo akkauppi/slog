@@ -209,9 +209,12 @@ shows the rolling-store reserve and logical chains, supports CRC-validated raw
 downloads, and authorizes whole-run removal only after every segment has been
 saved and read back through the file-system picker. **Analyze** opens one or
 more `.slog` files entirely offline, groups only unambiguous continuations, and
-shows an eight-probe SVG timeline with explicit unknown-duration gaps. See
+shows an eight-probe SVG timeline with explicit unknown-duration gaps. The
+selected run can be exported as CSV or as an Excel `.xlsx` workbook; both keep
+segment-relative time and mark unknown power gaps instead of inventing elapsed
+time. See
 [`docs/web-data-workspace.md`](docs/web-data-workspace.md) for the preservation
-and deletion gates.
+and deletion gates and the export schema.
 
 ## Installation geometry
 

@@ -954,6 +954,18 @@ tbody tr[data-current="true"] > th {
   text-transform: uppercase;
 }
 
+.analysis-toolbar__controls,
+.analysis-export {
+  display: flex;
+  align-items: end;
+  gap: 0.6rem;
+}
+
+.analysis-export .button {
+  min-height: 42px;
+  padding-block: 0.55rem;
+}
+
 select {
   min-height: 42px;
   padding: 0.45rem 2rem 0.45rem 0.65rem;
@@ -1457,6 +1469,16 @@ dialog h2 {
     align-items: start;
     flex-direction: column;
     gap: 0.8rem;
+  }
+
+  .analysis-toolbar__controls {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .analysis-export .button {
+    flex: 1;
   }
 
   .connection {

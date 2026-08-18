@@ -142,8 +142,9 @@ stays wired throughout setup.
 2. The portal takes five complete scans. The ROM set must remain unchanged,
    every probe must return a temperature, and each individual probe must stay
    within a 0.5 °C range. Its five-reading median becomes its baseline.
-3. Starting at P1, the user warms only the named physical metal tip by hand or
-   with a warm, not hot, cloth. No wire or probe is disconnected.
+3. Starting at P1, the user holds only the named metal tip between their
+   fingers until it is warmer, then asks the portal to check it. No wire or
+   probe is disconnected.
 4. A ROM is accepted only when two fresh scans select the same unmapped probe,
    at least 3.0 °C above its own baseline and at least 1.0 °C ahead of every other
    unmapped probe. Previously mapped probes are excluded, so they do not need
