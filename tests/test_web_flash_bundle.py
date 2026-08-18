@@ -57,7 +57,7 @@ def write_fixture(root: Path) -> tuple[Path, Path, Path]:
     )
     (build_dir / "bootloader.bin").write_bytes(b"bootloader")
     (build_dir / "partitions.bin").write_bytes(partition_binary())
-    (build_dir / "ota_data_initial.bin").write_bytes(b"ota-data")
+    (build_dir / "ota_data_initial.bin").write_bytes(b"\xff" * 0x2000)
     (build_dir / "firmware.bin").write_bytes(
         b"application\0" + VERSION.encode("ascii") + b"\0" + SOURCE_COMMIT.encode("ascii")
     )
@@ -243,6 +243,11 @@ class BundleTests(unittest.TestCase):
                 (build_dir / filename).write_bytes(b"x" * size)
                 with self.assertRaisesRegex(bundle.BundleError, message):
                     bundle.build_bundle(build_dir, partitions_csv, output_dir)
+
+    def test_rejects_truncated_ota_data_image(self):
+        (self.build_dir / "ota_data_initial.bin").write_bytes(b"\xff" * 0x1FFF)
+        with self.assertRaisesRegex(bundle.BundleError, "exactly fill"):
+            self.build()
 
     def test_rejects_release_metadata_not_compiled_into_application(self):
         (self.build_dir / "firmware.bin").write_bytes(b"no release identity")

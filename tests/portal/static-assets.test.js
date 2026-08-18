@@ -84,6 +84,86 @@ test("the portal has no third-party runtime assets", async () => {
   assert.equal(new Set(ids).size, ids.length, "HTML ids must be unique");
   assert.match(html, /id="task-title" tabindex="-1"/);
   assert.match(html, /id="transaction-notice"[\s\S]*?role="status"/);
+  assert.match(html, /<summary>Advanced mode<\/summary>/);
+  assert.match(html, /id="copy-transcript"/);
+  assert.match(html, /id="download-diagnostics"/);
+  assert.match(html, /id="clear-transcript"/);
+  assert.match(
+    html,
+    /id="install-progress-detail"[\s\S]*?role="status"[\s\S]*?aria-live="polite"[\s\S]*?aria-atomic="true"/,
+  );
+  assert.match(html, /free-form terminal[\s\S]*?not provided in this release/i);
+  assert.match(html, /probe ROM addresses[\s\S]*?Review it before sharing/i);
+  assert.doesNotMatch(html, /<input\b|<textarea\b/i);
+  assert.doesNotMatch(html, /type=["']file["']/i);
+});
+
+test("persisted flash recovery stays locked to the prepared package", async () => {
+  const source = await readFile(
+    path.join(portalRoot, "js/flash-ui.js"),
+    "utf8",
+  );
+  const store = await readFile(
+    path.join(portalRoot, "js/recovery-store.js"),
+    "utf8",
+  );
+  const app = await readFile(path.join(portalRoot, "js/app.js"), "utf8");
+  assert.match(
+    source,
+    /this\.prepared = await this\.controller\.prepare[\s\S]*?this\.controller\.markRecoveryRequired\([\s\S]*?this\.recovery\.packageSha256,[\s\S]*?this\.recovery\.deviceIdHash/,
+  );
+  assert.match(
+    source,
+    /if \(!this\.controller\?\.snapshot\.canCancel \|\| this\.busy\) return;/,
+  );
+  assert.match(source, /hidden: recovering/);
+  assert.match(
+    source,
+    /await this\.recoveryStore\.beginWrite\([\s\S]*?await this\.controller\.flash\(/,
+    "the recovery package and marker must persist before the controller can write",
+  );
+  assert.match(
+    source,
+    /await this\.recoveryStore\.acquireLifecycleIfAvailable\(\);[\s\S]*?await this\.recoveryStore\.beginWrite\([\s\S]*?await this\.controller\.flash\(/,
+    "the origin-wide lifecycle lock must be held before marker creation and writing",
+  );
+  assert.match(
+    source,
+    /if \(this\.recovery\) \{[\s\S]*?acquireLifecycleIfAvailable\(\)[\s\S]*?restoreOrRepairRecoveryPackage\([\s\S]*?this\.controller\.prepare\(/,
+    "recovered flows must acquire ownership and repair only before a chooser is shown",
+  );
+  assert.match(
+    source,
+    /await this\.controller\.cancel\(\);[\s\S]*?this\.controller = null;[\s\S]*?await this\.#preparePackage\(\);/,
+    "a canceled controller must be rebuilt before another chooser is enabled",
+  );
+  assert.doesNotMatch(source, /removeItem\(|storageRemove\(/);
+  assert.match(store, /phase:\s*RecoveryPhase\.VERIFICATION_REQUIRED/);
+  assert.match(
+    app,
+    /verifyInstalledFirmware\(controller\.snapshot\.deviceInfo\);[\s\S]*?await flashUi\.completeRunningFirmwareVerification/,
+  );
+  assert.match(store, /RECOVERY_PACKAGE_CACHE_PREFIX\s*=\s*\n?\s*"sauna-firmware-recovery-v1-"/);
+  assert.match(store, /RECOVERY_LIFECYCLE_LOCK/);
+  assert.match(store, /\{ mode: "exclusive", ifAvailable: true \}/);
+});
+
+test("the pinned esptool-js runtime is precached and unchanged", async () => {
+  const bundleName = "./vendor/esptool-js-0.6.0.js";
+  const expectedSha256 =
+    "7c361337d5bba7271cb0d9741f165a3b87137ff9284c13f112a6e197c48cd0da";
+  const { assets } = await appShell();
+  assert.ok(assets.includes(bundleName), `${bundleName} must be precached`);
+
+  const bundle = await readFile(path.join(portalRoot, bundleName.slice(2)));
+  assert.equal(createHash("sha256").update(bundle).digest("hex"), expectedSha256);
+
+  const provenance = await readFile(
+    path.join(portalRoot, "vendor/README.md"),
+    "utf8",
+  );
+  assert.match(provenance, new RegExp(expectedSha256));
+  assert.match(provenance, /esptool-js@0\.6\.0/);
 });
 
 test("the visual system globally removes rounded corners", async () => {

@@ -9,8 +9,10 @@
   --accent: #a33a16;
   --accent-hover: #7f2d11;
   --measure: 68ch;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Helvetica Neue", Arial, sans-serif;
   font-synthesis: none;
+  font-kerning: normal;
   text-rendering: optimizeLegibility;
 }
 
@@ -271,6 +273,10 @@ h3 {
   margin-top: 3rem;
 }
 
+#commissioning-workflow > * + * {
+  margin-top: 3rem;
+}
+
 .task,
 .probe-map,
 .technical {
@@ -280,6 +286,172 @@ h3 {
 
 .task {
   min-height: 310px;
+}
+
+.boot-instructions {
+  margin: 1.75rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+  counter-reset: boot-step;
+}
+
+.boot-instructions li {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  align-content: center;
+  padding-block: 0.65rem;
+  border-bottom: 1px solid var(--line);
+  color: #3f3f3b;
+  counter-increment: boot-step;
+}
+
+.boot-instructions li::before {
+  content: counter(boot-step, decimal-leading-zero);
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.boot-instructions strong {
+  display: block;
+  grid-column: 2;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.firmware-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1.75rem 0 0;
+  border-block: 1px solid var(--line);
+}
+
+.firmware-summary div {
+  min-width: 0;
+  padding: 0.9rem 1rem 0.9rem 0;
+}
+
+.firmware-summary div:nth-child(even) {
+  padding-left: 1rem;
+  border-left: 1px solid var(--line);
+}
+
+.firmware-summary div:nth-child(n + 3) {
+  border-top: 1px solid var(--line);
+}
+
+.firmware-summary dd {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.installation-stages,
+.verification-stages {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.installation-stages li,
+.verification-stages li {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.installation-stages li::before,
+.verification-stages li::before {
+  content: "—";
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+.installation-stages li[data-status="active"],
+.verification-stages li[data-status="active"] {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.installation-stages li[data-status="active"]::before,
+.verification-stages li[data-status="active"]::before {
+  content: "→";
+  color: var(--accent);
+}
+
+.installation-stages li[data-status="complete"],
+.verification-stages li[data-status="complete"] {
+  color: var(--ink);
+}
+
+.installation-stages li[data-status="complete"]::before,
+.verification-stages li[data-status="complete"]::before {
+  content: "✓";
+}
+
+.install-progress-detail {
+  margin: 0.8rem 0 0;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.commission-progress {
+  padding-top: 1.25rem;
+  border-top: 2px solid var(--ink);
+}
+
+.commission-progress ol {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  border-block: 1px solid var(--line);
+  list-style: none;
+}
+
+.commission-progress li {
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.commission-progress li + li {
+  border-left: 1px solid var(--line);
+}
+
+.commission-progress li[aria-current="step"] {
+  border-bottom: 3px solid var(--accent);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.commission-progress li[data-complete="true"] {
+  color: var(--ink);
+}
+
+.commission-progress li[data-complete="true"] span::before {
+  content: "✓ ";
+}
+
+.commission-progress__mobile {
+  display: none;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
 .task__description {
@@ -366,46 +538,6 @@ dd {
   border-bottom: 2px solid var(--ink);
   font-size: 0.9rem;
   font-weight: 700;
-}
-
-.verification-stages {
-  margin: 1.5rem 0 0;
-  padding: 0;
-  border-top: 1px solid var(--line);
-  list-style: none;
-}
-
-.verification-stages li {
-  min-height: 42px;
-  display: grid;
-  grid-template-columns: 1.5rem 1fr;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 0.88rem;
-}
-
-.verification-stages li::before {
-  content: "—";
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-}
-
-.verification-stages li[data-status="active"] {
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.verification-stages li[data-status="active"]::before {
-  content: "→";
-  color: var(--accent);
-}
-
-.verification-stages li[data-status="complete"] {
-  color: var(--ink);
-}
-
-.verification-stages li[data-status="complete"]::before {
-  content: "✓";
 }
 
 .actions {
@@ -598,6 +730,13 @@ tbody tr[data-current="true"] > th {
   font-weight: 700;
 }
 
+.technical__intro {
+  max-width: var(--measure);
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .technical__grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 1rem;
@@ -611,17 +750,88 @@ tbody tr[data-current="true"] > th {
   font-size: 0.76rem;
 }
 
-.protocol-log ol {
-  max-height: 12rem;
+.transcript-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.transcript-heading h3 {
   margin: 0;
-  padding: 0.75rem 0 0.75rem 2.1rem;
+}
+
+.transcript-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.transcript-actions .button {
+  min-height: 36px;
+  font-family: inherit;
+  font-size: 0.74rem;
+}
+
+.diagnostic-privacy {
+  max-width: var(--measure);
+  margin: 0 0 0.55rem;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.76rem;
+}
+
+#diagnostic-action-status {
+  min-height: 1.2em;
+  margin: 0 0 0.4rem;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.76rem;
+}
+
+.protocol-log ol {
+  max-height: 20rem;
+  margin: 0;
+  padding: 0.75rem;
   overflow: auto;
   border-block: 1px solid var(--line);
   color: #3f3f3b;
+  list-style: none;
 }
 
 .protocol-log li + li {
   margin-top: 0.35rem;
+}
+
+.transcript-entry {
+  display: grid;
+  grid-template-columns: 5.5rem 4.5rem 2.25rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: baseline;
+}
+
+.transcript-entry__time,
+.transcript-entry__source,
+.transcript-entry__direction {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.transcript-entry__direction {
+  font-weight: 750;
+}
+
+.transcript-entry[data-direction="tx"] .transcript-entry__direction,
+.transcript-entry[data-direction="rx"] .transcript-entry__direction {
+  color: var(--ink);
+}
+
+.transcript-entry__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .update-notice {
@@ -688,6 +898,25 @@ dialog h2 {
     display: block;
   }
 
+  .commission-progress {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .commission-progress > .section-label {
+    margin: 0;
+  }
+
+  .commission-progress ol {
+    display: none;
+  }
+
+  .commission-progress__mobile {
+    display: block;
+  }
+
   .work-column > * + * {
     margin-top: 2rem;
   }
@@ -742,7 +971,8 @@ dialog h2 {
   }
 
   .device-summary,
-  .technical__grid {
+  .technical__grid,
+  .firmware-summary {
     grid-template-columns: 1fr;
   }
 
@@ -754,10 +984,32 @@ dialog h2 {
     border-left: 0;
   }
 
+  .firmware-summary div:nth-child(even),
+  .firmware-summary div:nth-child(n + 3) {
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
   .section-heading {
     align-items: start;
     flex-direction: column;
     gap: 0.3rem;
+  }
+
+  .transcript-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .transcript-actions {
+    justify-content: flex-start;
+  }
+
+  .transcript-entry {
+    grid-template-columns: 5rem 3.75rem 2rem minmax(0, 1fr);
+    gap: 0.35rem;
   }
 
   .table-wrap {

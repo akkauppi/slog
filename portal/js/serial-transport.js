@@ -107,12 +107,16 @@ export async function requestSerialPort(
 
 /** A small reopenable wrapper around one previously authorized SerialPort. */
 export class WebSerialTransport {
-  constructor(port, { baudRate = DEFAULT_BAUD_RATE } = {}) {
+  constructor(port, { baudRate = DEFAULT_BAUD_RATE, onTraffic = null } = {}) {
     if (!port || typeof port.open !== "function") {
       throw new TypeError("a Web Serial SerialPort is required");
     }
+    if (onTraffic !== null && typeof onTraffic !== "function") {
+      throw new TypeError("onTraffic must be a function or null");
+    }
     this.port = port;
     this.baudRate = baudRate;
+    this._onTraffic = onTraffic;
     this._decoder = new AsciiLineDecoder();
     this._records = [];
     this._waiters = [];
@@ -169,6 +173,12 @@ export class WebSerialTransport {
     }
     try {
       await this._writer.write(new TextEncoder().encode(`${line}\n`));
+      this._observeTraffic({
+        kind: "serial",
+        direction: "tx",
+        line,
+        malformed: false,
+      });
     } catch (error) {
       const wrapped = new SerialTransportError("could not write to the serial port", {
         cause: error,
@@ -240,7 +250,15 @@ export class WebSerialTransport {
         const { value, done } = await reader.read();
         if (done) break;
         if (!value) continue;
-        for (const record of this._decoder.push(value)) this._deliver(record);
+        for (const record of this._decoder.push(value)) {
+          this._observeTraffic({
+            kind: "serial",
+            direction: "rx",
+            line: record.error ? record.linePrefix : record.line,
+            malformed: Boolean(record.error),
+          });
+          this._deliver(record);
+        }
       }
       if (!this._closing) {
         const detail = this._decoder.hasPartialLine() ? " in the middle of a line" : "";
@@ -272,6 +290,14 @@ export class WebSerialTransport {
     }
     clearTimeout(waiter.timer);
     waiter.resolve(record);
+  }
+
+  _observeTraffic(entry) {
+    try {
+      this._onTraffic?.(Object.freeze({ ...entry }));
+    } catch {
+      // Read-only diagnostics must never alter serial protocol behavior.
+    }
   }
 
   _fail(error) {

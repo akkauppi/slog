@@ -87,11 +87,13 @@ line-oriented protocol intended for both this tool and the browser portal is
 documented in
 [`docs/probe-commissioning.md`](docs/probe-commissioning.md).
 
-The focused browser portal provides the connect-one-at-a-time workflow without
-installing local tooling. It validates the logger before making changes,
-identifies P1 through P8, verifies the committed map after restart, and creates
-a local `sensor-map.json` backup. It is designed for GitHub Pages and remains
-available offline after its first visit. See
+The focused browser portal installs its own versioned, SHA-256-checked firmware
+package, verifies the running logger, and then provides the connect-one-at-a-time
+workflow without local tooling. It identifies P1 through P8, verifies the
+committed map after restart, and creates a local `sensor-map.json` backup. The
+static utility is designed for GitHub Pages and remains available offline after
+its files have been cached. It has no arbitrary firmware picker or whole-flash
+erase option. See
 [`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md) for
 browser requirements, recovery behavior, local serving, and deployment. The
 warm-one-at-a-time workflow remains in the Python tool for this first slice.

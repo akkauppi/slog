@@ -6,13 +6,13 @@
     <meta name="theme-color" content="#171717">
     <meta
       name="description"
-      content="Commission the eight temperature probes on a sauna logger over USB."
+      content="Install verified firmware and commission eight temperature probes on a sauna logger over USB."
     >
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; worker-src 'self'; manifest-src 'self'"
     >
-    <title>Probe setup · Sauna logger</title>
+    <title>Install &amp; set up · Sauna logger</title>
     <link rel="manifest" href="./manifest.webmanifest">
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
@@ -23,10 +23,10 @@
 
     <header class="site-header">
       <div class="site-header__inner">
-        <div class="identity" aria-label="Sauna logger probe setup">
+        <div class="identity" aria-label="Sauna logger install and setup utility">
           <span class="identity__product">Sauna logger</span>
           <span class="identity__separator" aria-hidden="true">/</span>
-          <span class="identity__section">Probe setup</span>
+          <span class="identity__section">Install &amp; set up</span>
         </div>
         <div class="connection">
           <span
@@ -48,12 +48,12 @@
 
     <main id="main" class="page">
       <section class="page-intro" aria-labelledby="page-title">
-        <p class="section-label">USB commissioning utility</p>
-        <h1 id="page-title">Commission eight temperature probes</h1>
+        <p class="section-label">Local USB utility</p>
+        <h1 id="page-title">Prepare a sauna logger</h1>
         <p>
-          Assign each physical probe to its fixed height, store the map on the
-          logger, and verify it after restart. Probe identity comes from its
-          DS18B20 address, never the order in which the bus reports it.
+          Install the project firmware, verify the running logger, then assign
+          its eight temperature probes. The portal uses only bundled release
+          files and does not upload device data.
         </p>
       </section>
 
@@ -66,133 +66,217 @@
       <section class="message" id="environment-message" role="status" hidden></section>
 
       <div class="workspace">
-        <nav class="progress" aria-label="Commissioning progress">
+        <nav class="progress" aria-label="Logger preparation progress">
           <p class="section-label">Process</p>
-          <ol class="progress__list" id="progress-list">
-            <li data-step="connect" aria-current="step">
+          <ol class="progress__list" id="macro-progress-list">
+            <li data-macro-step="install" aria-current="step">
               <span class="progress__number">01</span>
-              <span>Connect</span>
+              <span>Install firmware</span>
             </li>
-            <li data-step="prepare">
+            <li data-macro-step="verify">
               <span class="progress__number">02</span>
-              <span>Prepare</span>
+              <span>Verify logger</span>
             </li>
-            <li data-step="identify">
+            <li data-macro-step="commission">
               <span class="progress__number">03</span>
-              <span>Identify</span>
-            </li>
-            <li data-step="review">
-              <span class="progress__number">04</span>
-              <span>Review</span>
-            </li>
-            <li data-step="verify">
-              <span class="progress__number">05</span>
-              <span>Verify</span>
+              <span>Set up probes</span>
             </li>
           </ol>
         </nav>
 
         <div class="work-column">
-          <p class="mobile-progress" id="mobile-progress">Step 1 of 5</p>
+          <p class="mobile-progress" id="mobile-macro-progress">Stage 1 of 3</p>
 
-          <aside
-            class="transaction-notice"
-            id="transaction-notice"
-            role="status"
-            aria-live="polite"
-            hidden
-          >
-            <strong>Probe setup is open.</strong>
-            Automatic logging is paused until setup is completed or cancelled.
-            Keep this tab open.
-          </aside>
-
-          <section class="task" aria-labelledby="task-title">
-            <p class="section-label" id="task-kicker">Step 1 · Connect</p>
-            <h2 id="task-title" tabindex="-1">Connect the logger</h2>
-            <p class="task__description" id="task-description">
-              Use a USB data cable. Close PlatformIO, a serial monitor, or any
-              other application using the port.
+          <section class="task" id="install-task" aria-labelledby="install-title">
+            <p class="section-label" id="install-kicker">Stage 1 · Install firmware</p>
+            <h2 id="install-title" tabindex="-1">Install the project firmware</h2>
+            <p class="task__description" id="install-description">
+              Put the XIAO ESP32-C3 into BOOT mode, choose it in the browser,
+              then review the bundled release before anything is written.
             </p>
 
-            <div class="message" id="task-message" role="status" aria-live="polite" hidden></div>
+            <div
+              class="message"
+              id="install-message"
+              role="status"
+              aria-live="polite"
+              hidden
+            ></div>
 
-            <dl class="device-summary" id="device-summary" hidden>
+            <ol class="boot-instructions" id="boot-instructions">
+              <li>
+                <strong>Disconnect USB.</strong>
+                Leave the probes and other wiring undisturbed.
+              </li>
+              <li>
+                <strong>Hold BOOT and reconnect USB.</strong>
+                Release BOOT after the computer detects the board.
+              </li>
+              <li>
+                <strong>Choose the bootloader port.</strong>
+                Close PlatformIO or any serial monitor first.
+              </li>
+            </ol>
+
+            <dl class="firmware-summary" id="firmware-summary" hidden>
               <div>
-                <dt>Logger</dt>
-                <dd id="device-product">—</dd>
+                <dt>Release</dt>
+                <dd id="install-release">—</dd>
               </div>
               <div>
-                <dt>Firmware</dt>
-                <dd id="device-firmware">—</dd>
+                <dt>Target</dt>
+                <dd id="install-target">—</dd>
               </div>
               <div>
-                <dt>Configuration</dt>
-                <dd id="device-configuration">—</dd>
+                <dt>Manifest</dt>
+                <dd id="install-manifest">—</dd>
+              </div>
+              <div>
+                <dt>Image integrity</dt>
+                <dd id="install-hash">—</dd>
               </div>
             </dl>
 
-            <div class="expected" id="expected-result" hidden></div>
-
-            <ol class="verification-stages" id="verification-stages" hidden>
-              <li>Sending eight positions</li>
-              <li>Writing CRC-protected map</li>
-              <li>Reading map back</li>
-              <li>Restarting logger</li>
-              <li>Verifying active generation</li>
-              <li>Checking all eight probes</li>
+            <ol class="installation-stages" id="installation-stages" hidden>
+              <li>Validate manifest and image hashes</li>
+              <li>Prepare the ESP32-C3 bootloader</li>
+              <li>Write firmware</li>
+              <li>Verify the written image</li>
             </ol>
+            <p
+              class="install-progress-detail"
+              id="install-progress-detail"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              hidden
+            ></p>
 
             <div class="actions">
-              <button class="button button--primary" id="primary-action" type="button">
-                Choose logger
+              <button class="button button--primary" id="install-primary" type="button">
+                Choose bootloader device
               </button>
-              <button class="button button--secondary" id="secondary-action" type="button" hidden></button>
-              <button class="button button--quiet" id="cancel-action" type="button" hidden>
-                Cancel setup
+              <button class="button button--secondary" id="install-secondary" type="button">
+                Firmware already installed
               </button>
+              <button class="button button--quiet" id="install-tertiary" type="button" hidden></button>
             </div>
 
-            <p class="privacy-note" id="privacy-note">
-              Only the device you select is shared with this page. Nothing is uploaded.
+            <p class="privacy-note" id="install-note">
+              The portal accepts only its versioned release manifest and
+              SHA-256-verified image set. There is no file picker or erase option.
             </p>
           </section>
 
-          <section class="probe-map" aria-labelledby="probe-map-title">
-            <div class="section-heading">
-              <div>
-                <p class="section-label">Fixed geometry</p>
-                <h2 id="probe-map-title">Probe order</h2>
-              </div>
-              <p id="probe-count">0 of 8 identified</p>
-            </div>
+          <section id="commissioning-workflow" hidden>
+            <nav class="commission-progress" aria-label="Probe setup progress">
+              <p class="section-label">Probe setup</p>
+              <ol id="progress-list">
+                <li data-step="connect" aria-current="step"><span>Connect</span></li>
+                <li data-step="prepare"><span>Prepare</span></li>
+                <li data-step="identify"><span>Identify</span></li>
+                <li data-step="review"><span>Review</span></li>
+                <li data-step="verify"><span>Verify</span></li>
+              </ol>
+              <p class="commission-progress__mobile" id="mobile-progress">Probe setup · Step 1 of 5</p>
+            </nav>
 
-            <div class="orientation orientation--top">
-              <span>Top</span>
-              <span>Away from logger</span>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Probe</th>
-                    <th scope="col">Relative position</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Temperature</th>
-                    <th scope="col">ROM address</th>
-                  </tr>
-                </thead>
-                <tbody id="probe-table-body"></tbody>
-              </table>
-            </div>
-            <div class="orientation orientation--bottom">
-              <span>Bottom</span>
-              <span>Next to logger</span>
-            </div>
+            <aside
+              class="transaction-notice"
+              id="transaction-notice"
+              role="status"
+              aria-live="polite"
+              hidden
+            >
+              <strong>Probe setup is open.</strong>
+              Automatic logging is paused until setup is completed or cancelled.
+              Keep this tab open.
+            </aside>
+
+            <section class="task" id="commission-task" aria-labelledby="task-title">
+              <p class="section-label" id="task-kicker">Probe setup · Connect</p>
+              <h2 id="task-title" tabindex="-1">Connect the running logger</h2>
+              <p class="task__description" id="task-description">
+                Reset into the installed firmware, then choose the serial port
+                that reappears.
+              </p>
+
+              <div class="message" id="task-message" role="status" aria-live="polite" hidden></div>
+
+              <dl class="device-summary" id="device-summary" hidden>
+                <div><dt>Logger</dt><dd id="device-product">—</dd></div>
+                <div><dt>Firmware</dt><dd id="device-firmware">—</dd></div>
+                <div><dt>Configuration</dt><dd id="device-configuration">—</dd></div>
+              </dl>
+
+              <div class="expected" id="expected-result" hidden></div>
+
+              <ol class="verification-stages" id="verification-stages" hidden>
+                <li>Sending eight positions</li>
+                <li>Writing CRC-protected map</li>
+                <li>Reading map back</li>
+                <li>Restarting logger</li>
+                <li>Verifying active generation</li>
+                <li>Checking all eight probes</li>
+              </ol>
+
+              <div class="actions">
+                <button class="button button--primary" id="primary-action" type="button">
+                  Choose logger
+                </button>
+                <button class="button button--secondary" id="secondary-action" type="button" hidden></button>
+                <button class="button button--quiet" id="cancel-action" type="button" hidden>
+                  Cancel setup
+                </button>
+              </div>
+
+              <p class="privacy-note" id="privacy-note">
+                Only the device you select is shared with this page. Nothing is uploaded.
+              </p>
+            </section>
+
+            <section class="probe-map" aria-labelledby="probe-map-title">
+              <div class="section-heading">
+                <div>
+                  <p class="section-label">Fixed geometry</p>
+                  <h2 id="probe-map-title">Probe order</h2>
+                </div>
+                <p id="probe-count">0 of 8 identified</p>
+              </div>
+
+              <div class="orientation orientation--top">
+                <span>Top</span>
+                <span>Away from logger</span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Probe</th>
+                      <th scope="col">Relative position</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Temperature</th>
+                      <th scope="col">ROM address</th>
+                    </tr>
+                  </thead>
+                  <tbody id="probe-table-body"></tbody>
+                </table>
+              </div>
+              <div class="orientation orientation--bottom">
+                <span>Bottom</span>
+                <span>Next to logger</span>
+              </div>
+            </section>
           </section>
 
           <details class="technical" id="technical-details">
-            <summary>Technical details</summary>
+            <summary>Advanced mode</summary>
+            <p class="technical__intro">
+              Read-only local diagnostics. Manual commands and free-form terminal
+              input are not provided in this release; managed workflows keep
+              exclusive control. Firmware frames are summarized, and binary payload
+              bytes are never shown.
+            </p>
             <dl class="technical__grid">
               <div><dt>Protocol</dt><dd id="detail-protocol">—</dd></div>
               <div><dt>Source commit</dt><dd id="detail-commit">—</dd></div>
@@ -202,31 +286,61 @@
               <div><dt>USB device</dt><dd id="detail-usb">—</dd></div>
             </dl>
             <div class="protocol-log">
-              <h3>Recent activity</h3>
-              <ol id="protocol-log" aria-label="Recent protocol activity"></ol>
+              <div class="transcript-heading">
+                <h3>Timestamped transcript</h3>
+                <div class="transcript-actions">
+                  <button class="button button--quiet" id="copy-transcript" type="button">
+                    Copy transcript
+                  </button>
+                  <button class="button button--quiet" id="download-diagnostics" type="button">
+                    Download diagnostics
+                  </button>
+                  <button class="button button--quiet" id="clear-transcript" type="button">
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <p class="diagnostic-privacy">
+                This transcript can contain probe ROM addresses and device
+                identifiers. Review it before sharing. Nothing is uploaded.
+              </p>
+              <p id="diagnostic-action-status" role="status" aria-live="polite"></p>
+              <ol id="protocol-log" aria-label="Read-only diagnostic transcript"></ol>
             </div>
           </details>
         </div>
       </div>
     </main>
 
-    <aside
-      class="update-notice"
-      id="update-notice"
-      role="status"
-      aria-live="polite"
-      hidden
-    >
-      <p>A portal update is ready. Finish or cancel probe setup before reloading.</p>
+    <aside class="update-notice" id="update-notice" role="status" aria-live="polite" hidden>
+      <p>A portal update is ready. Finish installation or probe setup before reloading.</p>
       <button class="button button--secondary" id="update-action" type="button" disabled>
         Reload update
       </button>
     </aside>
 
     <footer class="site-footer">
-      <p>Runs locally in your browser. Serial data and probe addresses are not uploaded.</p>
-      <p>Desktop Chrome or Edge · Web Serial · 115200 baud</p>
+      <p>Runs locally in your browser. Firmware files are bundled; device data is not uploaded.</p>
+      <p>Desktop browser with Web Serial · HTTPS or localhost</p>
     </footer>
+
+    <dialog id="install-dialog" aria-labelledby="install-dialog-title">
+      <form method="dialog">
+        <p class="section-label">Write confirmation</p>
+        <h2 id="install-dialog-title">Install this verified release?</h2>
+        <p>
+          The portal will write the bundled sauna logger firmware to the selected
+          ESP32-C3. It will not erase the whole flash, and it will not accept a
+          replacement file.
+        </p>
+        <div class="actions">
+          <button class="button button--secondary" value="cancel">Back</button>
+          <button class="button button--primary" id="confirm-install" value="confirm">
+            Install verified firmware
+          </button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="write-dialog" aria-labelledby="write-dialog-title">
       <form method="dialog">

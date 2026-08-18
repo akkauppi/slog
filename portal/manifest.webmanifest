@@ -1,7 +1,7 @@
 {
-  "name": "Sauna logger commissioning",
+  "name": "Sauna logger install and setup",
   "short_name": "Sauna logger",
-  "description": "Commission the eight temperature probes on a sauna logger over USB.",
+  "description": "Install verified firmware and commission eight temperature probes over USB.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

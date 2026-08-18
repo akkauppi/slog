@@ -19,11 +19,14 @@ import {
   requestSerialPort,
   webSerialSupported,
 } from "./serial-transport.js";
+import { FlashInstallationUi } from "./flash-ui.js";
+import { DiagnosticTranscript } from "./diagnostics.js";
 
 const PENDING_STORAGE_KEY = "sauna-logger:probe-map:pending:v1";
 const VERIFIED_STORAGE_KEY = "sauna-logger:probe-map:verified:v1";
 const KEEPALIVE_INTERVAL_MS = 60_000;
 const STEP_NAMES = ["connect", "prepare", "identify", "review", "verify"];
+const MACRO_STEP_NAMES = ["install", "verify", "commission"];
 const PRECOMMIT_PHASES = new Set([
   CommissioningPhase.AWAITING_EMPTY_BUS,
   CommissioningPhase.SCANNING_EMPTY_BUS,
@@ -41,10 +44,14 @@ const element = (id) => {
 const connectionState = element("connection-state");
 const disconnectButton = element("disconnect-button");
 const environmentMessage = element("environment-message");
+const macroProgressList = element("macro-progress-list");
+const mobileMacroProgress = element("mobile-macro-progress");
+const installTask = element("install-task");
+const commissioningWorkflow = element("commissioning-workflow");
 const progressList = element("progress-list");
 const mobileProgress = element("mobile-progress");
 const transactionNotice = element("transaction-notice");
-const taskPanel = document.querySelector(".task");
+const taskPanel = element("commission-task");
 const taskKicker = element("task-kicker");
 const taskTitle = element("task-title");
 const taskDescription = element("task-description");
@@ -68,6 +75,10 @@ const detailGeneration = element("detail-generation");
 const detailCrc = element("detail-crc");
 const detailUsb = element("detail-usb");
 const protocolLog = element("protocol-log");
+const diagnosticActionStatus = element("diagnostic-action-status");
+const copyTranscriptButton = element("copy-transcript");
+const downloadDiagnosticsButton = element("download-diagnostics");
+const clearTranscriptButton = element("clear-transcript");
 const updateNotice = element("update-notice");
 const updateAction = element("update-action");
 const writeDialog = element("write-dialog");
@@ -87,6 +98,23 @@ let waitingServiceWorker = null;
 let reloadForUpdate = false;
 let updateReadyToReload = false;
 let initialTaskRendered = false;
+let flashUi = null;
+let installedFirmwareExpectation = null;
+
+const diagnostics = new DiagnosticTranscript({
+  list: protocolLog,
+  status: diagnosticActionStatus,
+  capacity: 300,
+  context: () => ({
+    portal_url: window.location.href,
+    protocol: detailProtocol.textContent,
+    source_commit: detailCommit.textContent,
+    ota_slot: detailOta.textContent,
+    configuration_generation: detailGeneration.textContent,
+    configuration_crc: detailCrc.textContent,
+    usb_device: detailUsb.textContent,
+  }),
+});
 
 function positionHeight(position) {
   return -20 * (position - 1);
@@ -190,6 +218,19 @@ function renderProbeMap(
   probeCount.textContent = `${roms.length} of 8 ${status === "verified" ? "verified" : "identified"}`;
 }
 
+function setMacroStep(name) {
+  const index = MACRO_STEP_NAMES.indexOf(name);
+  for (const item of macroProgressList.querySelectorAll("li")) {
+    const itemIndex = MACRO_STEP_NAMES.indexOf(item.dataset.macroStep);
+    if (itemIndex === index) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+    item.dataset.complete = String(itemIndex < index);
+  }
+  mobileMacroProgress.textContent = `Stage ${index + 1} of ${MACRO_STEP_NAMES.length}`;
+  installTask.hidden = name !== "install";
+  commissioningWorkflow.hidden = name === "install";
+}
+
 function setStep(name) {
   const index = STEP_NAMES.indexOf(name);
   for (const item of progressList.querySelectorAll("li")) {
@@ -199,7 +240,7 @@ function setStep(name) {
     item.dataset.complete = String(itemIndex < index || name === "complete");
   }
   const displayedIndex = name === "complete" ? STEP_NAMES.length : index + 1;
-  mobileProgress.textContent = `Step ${displayedIndex} of ${STEP_NAMES.length}`;
+  mobileProgress.textContent = `Probe setup · Step ${displayedIndex} of ${STEP_NAMES.length}`;
 }
 
 function setMessage(text = "", kind = "info") {
@@ -275,8 +316,9 @@ async function runAction(action) {
     if (isTransportFailure(error)) {
       await transitionAfterTransportFailure(error);
     }
-    setMessage(friendlyError(error), "error");
-    logActivity(`Error · ${friendlyError(error)}`);
+    const message = friendlyError(error);
+    setMessage(message, "error");
+    logActivity(`Error · ${message}`);
   } finally {
     setBusy(false);
   }
@@ -360,12 +402,16 @@ function friendlyError(error, position = controller?.snapshot.nextPosition) {
   return error?.message ? String(error.message) : "An unexpected setup error occurred.";
 }
 
-function setConnection(connected, text = connected ? "Logger connected" : "Not connected") {
+function setConnection(
+  connected,
+  text = connected ? "Logger connected" : "Not connected",
+  disconnectable = connected,
+) {
   connectionState.dataset.connected = String(connected);
   connectionState.lastChild.textContent = ` ${text}`;
-  disconnectButton.hidden = !connected;
-  disconnectButton.dataset.available = connected ? "true" : "false";
-  disconnectButton.disabled = busy || !connected;
+  disconnectButton.hidden = !connected || !disconnectable;
+  disconnectButton.dataset.available = connected && disconnectable ? "true" : "false";
+  disconnectButton.disabled = busy || !connected || !disconnectable;
 }
 
 function updateDeviceDetails(info, configuration = null) {
@@ -406,15 +452,7 @@ function formatUsbDevice(port) {
 }
 
 function logActivity(text) {
-  const item = document.createElement("li");
-  const time = new Date().toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  item.textContent = `${time} · ${text}`;
-  protocolLog.append(item);
-  while (protocolLog.children.length > 12) protocolLog.firstElementChild.remove();
+  diagnostics.record({ source: "portal", direction: "event", line: text });
 }
 
 function storageRead(key) {
@@ -461,6 +499,7 @@ function updateTransactionUi() {
 }
 
 function workflowUnsafeToLeave() {
+  if (flashUi?.unsafeToUnload) return true;
   const snapshot = controller?.snapshot;
   if (!snapshot) return false;
   if (snapshot.transactionOpen) return true;
@@ -482,14 +521,16 @@ function workflowUnsafeToLeave() {
   );
 }
 
-function showConnect() {
+function showConnect({ afterInstall = false } = {}) {
   stopKeepalive();
+  setMacroStep("verify");
   setStep("connect");
   setTask({
-    kicker: "Step 1 · Connect",
-    title: "Connect the logger",
-    description:
-      "Use a USB data cable. Close PlatformIO, a serial monitor, or any other application using the port.",
+    kicker: "Stage 2 · Verify logger",
+    title: afterInstall ? "Reconnect the running logger" : "Verify the running logger",
+    description: afterInstall
+      ? "The installer reset and closed the bootloader connection. Keep USB connected, choose the application port after it appears, and verify the exact firmware identity and partition layout."
+      : "Choose the logger running the project firmware. Close PlatformIO, a serial monitor, or any other application using the port.",
   });
   configureAction(primaryAction, {
     label: "Choose logger",
@@ -530,7 +571,7 @@ function explainEnvironment() {
       "USB connection needs the HTTPS portal or a localhost server; it cannot run from a file opened directly.";
   } else if (!webSerialSupported()) {
     environmentMessage.textContent =
-      "USB connection is not available in this browser. Use a current Chrome or Edge browser on a computer with USB access.";
+      "USB connection is not available in this browser. Use a current desktop browser that exposes Web Serial, such as Chrome, Chromium, Edge, Brave, or Firefox 151 and newer.";
   } else {
     environmentMessage.textContent =
       "USB setup must run as a top-level page, not inside an embedded frame.";
@@ -540,7 +581,9 @@ function explainEnvironment() {
 async function attachPort(port) {
   await closeTransport();
   selectedPort = port;
-  transport = new WebSerialTransport(port);
+  transport = new WebSerialTransport(port, {
+    onTraffic: (entry) => diagnostics.serialTraffic(entry),
+  });
   await transport.open();
   client = new CommissioningProtocolClient(transport);
   setConnection(true);
@@ -568,18 +611,62 @@ async function chooseInitialLogger() {
     description: "Reading the device identity and current probe configuration.",
   });
   controller = new ConnectCommissioningController(client);
+  let verifiedExpectation = null;
   try {
     await controller.inspect();
+    verifyInstalledFirmware(controller.snapshot.deviceInfo);
+    if (installedFirmwareExpectation) {
+      await flashUi.completeRunningFirmwareVerification(
+        runningFirmwareIdentity(controller.snapshot.deviceInfo),
+      );
+      verifiedExpectation = installedFirmwareExpectation;
+    }
   } catch (error) {
     await closeTransport();
-    showConnect();
+    showConnect({ afterInstall: Boolean(installedFirmwareExpectation) });
     throw error;
+  }
+  if (verifiedExpectation) {
+    logActivity(
+      `Verified installed firmware ${verifiedExpectation.firmware} (${verifiedExpectation.commit})`,
+    );
+    installedFirmwareExpectation = null;
   }
   logActivity("Validated SYS INFO and read CFG GET");
   showInspection();
 }
 
+function verifyInstalledFirmware(info) {
+  const expected = installedFirmwareExpectation;
+  if (!expected) return;
+  const checks = [
+    ["product", info.product, expected.product],
+    ["firmware version", info.firmware, expected.firmware],
+    ["source commit", info.commit, expected.commit],
+    ["partition layout", info.partition, expected.partition],
+    ["OTA slot", info.ota, expected.ota],
+  ];
+  for (const [label, actual, wanted] of checks) {
+    if (actual !== wanted) {
+      throw new ProtocolError(
+        `running ${label} ${JSON.stringify(actual)} does not match installed ${JSON.stringify(wanted)}`,
+      );
+    }
+  }
+}
+
+function runningFirmwareIdentity(info) {
+  return {
+    product: info.product,
+    firmware: info.firmware,
+    commit: info.commit,
+    partition: info.partition,
+    ota: info.ota,
+  };
+}
+
 function showInspection(message = "") {
+  setMacroStep("commission");
   reconnectMode = null;
   expectedDisconnect = false;
   const snapshot = controller.snapshot;
@@ -1380,6 +1467,31 @@ function showWaitingUpdate(worker) {
   updateAction.disabled = busy || workflowUnsafeToLeave();
 }
 
+function initializeFlashUi() {
+  setMacroStep("install");
+  flashUi = new FlashInstallationUi({
+    environmentSupported: portalEnvironmentSupported,
+    onActivity: logActivity,
+    onConnection: setConnection,
+    onDiagnostic: (entry) => diagnostics.record(entry),
+    onReadyForVerification: (expectation) => {
+      installedFirmwareExpectation = expectation;
+      setConnection(false);
+      showConnect({ afterInstall: true });
+    },
+    onSkip: () => {
+      installedFirmwareExpectation = null;
+      setConnection(false);
+      showConnect();
+    },
+    onStateChange: () => {
+      updateAction.disabled =
+        busy || !waitingServiceWorker || workflowUnsafeToLeave();
+    },
+  });
+  flashUi.start();
+}
+
 writeDialog.addEventListener("close", () => {
   if (writeDialog.returnValue === "confirm") void runAction(performCommit);
 });
@@ -1399,6 +1511,24 @@ updateAction.addEventListener("click", () => {
   waitingServiceWorker.postMessage({ type: "ACTIVATE_UPDATE" });
 });
 
+copyTranscriptButton.addEventListener("click", async () => {
+  try {
+    await diagnostics.copy();
+  } catch (error) {
+    diagnostics.reportActionError(error);
+  }
+});
+
+downloadDiagnosticsButton.addEventListener("click", () => {
+  try {
+    diagnostics.download();
+  } catch (error) {
+    diagnostics.reportActionError(error);
+  }
+});
+
+clearTranscriptButton.addEventListener("click", () => diagnostics.clear());
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") void keepaliveTick();
 });
@@ -1416,4 +1546,5 @@ if (webSerialSupported()) {
 buildProbeTable();
 explainEnvironment();
 initializeServiceWorker();
-showConnect();
+logActivity("Portal opened · managed workflows active · manual commands not provided");
+initializeFlashUi();

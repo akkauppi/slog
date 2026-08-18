@@ -109,6 +109,75 @@ test("Web Serial transport streams split response frames into the protocol clien
   assert.deepEqual(port.openCalls, [{ baudRate: 115200 }]);
 });
 
+test("traffic observer receives bounded TX/RX lines without affecting protocol", async () => {
+  const observed = [];
+  const port = new ScriptedPort(
+    new Map([["SYS INFO", [lines("boot chatter", infoLine())]]]),
+  );
+  const transport = new WebSerialTransport(port, {
+    onTraffic: (entry) => observed.push(entry),
+  });
+  await transport.open();
+  const client = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
+  assert.equal((await client.info()).product, "sauna_logger");
+  const normalized = observed.map(({ direction, line, malformed }) => ({
+    direction,
+    line,
+    malformed,
+  }));
+  // RX may be scheduled before the writable-stream promise settles, so the
+  // observer promises completeness rather than cross-stream ordering.
+  assert.deepEqual(normalized.find((entry) => entry.direction === "tx"),
+    { direction: "tx", line: "SYS INFO", malformed: false },
+  );
+  assert.deepEqual(normalized.filter((entry) => entry.direction === "rx"), [
+    { direction: "rx", line: "boot chatter", malformed: false },
+    { direction: "rx", line: infoLine(), malformed: false },
+  ]);
+  assert.ok(observed.every((entry) => Object.isFrozen(entry)));
+  await transport.close();
+});
+
+test("traffic observer exceptions are swallowed", async () => {
+  const port = new ScriptedPort(
+    new Map([["SYS INFO", [lines(infoLine())]]]),
+  );
+  const transport = new WebSerialTransport(port, {
+    onTraffic: () => {
+      throw new Error("diagnostic renderer failed");
+    },
+  });
+  await transport.open();
+  const client = new CommissioningProtocolClient(transport, { timeoutMs: 100 });
+  assert.equal((await client.info()).protocol, 1);
+  await transport.close();
+});
+
+test("failed writes are not reported as transmitted lines", async () => {
+  const observed = [];
+  const port = {
+    async open() {
+      this.readable = new ReadableStream({});
+      this.writable = new WritableStream({
+        write() {
+          throw new Error("USB write failed");
+        },
+      });
+    },
+    async close() {},
+  };
+  const transport = new WebSerialTransport(port, {
+    onTraffic: (entry) => observed.push(entry),
+  });
+  await transport.open();
+  await assert.rejects(
+    transport.writeLine("SYS INFO"),
+    SerialTransportError,
+  );
+  assert.deepEqual(observed, []);
+  await transport.close();
+});
+
 test("client serializes concurrent commands and validates normalized acknowledgements", async () => {
   const port = new ScriptedPort(
     new Map([

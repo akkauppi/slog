@@ -1,15 +1,21 @@
 // CI verifies this value against the content of every APP_SHELL entry. A new
 // worker must never populate the cache still owned by an active transaction.
-const APP_SHELL_REVISION = "b2612fe95cb4";
+const APP_SHELL_REVISION = "7fe6506faba8";
 const CACHE_NAME = `sauna-commissioning-${APP_SHELL_REVISION}`;
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./js/app.js",
+  "./js/diagnostics.js",
+  "./js/flash-ui.js",
+  "./js/flashing.js",
+  "./js/recovery-store.js",
+  "./js/esptool-adapter.js",
   "./js/commissioning.js",
   "./js/protocol.js",
   "./js/serial-transport.js",
+  "./vendor/esptool-js-0.6.0.js",
   "./manifest.webmanifest",
   "./assets/icon.svg",
 ];

@@ -454,8 +454,11 @@ def validate_flash_images(
         raise BundleError("partition-table image has an unexpected offset or size")
     if table.end > by_name["nvs"].offset:
         raise BundleError("partition-table image reaches the NVS partition")
-    if ota_data.offset != by_name["otadata"].offset or ota_data.end > by_name["otadata"].end:
-        raise BundleError("OTA-data image exceeds the otadata partition")
+    if (
+        ota_data.offset != by_name["otadata"].offset
+        or ota_data.size != by_name["otadata"].size
+    ):
+        raise BundleError("OTA-data image must exactly fill the otadata partition")
     if application.offset != by_name["app0"].offset or application.end > by_name["app0"].end:
         raise BundleError("application image exceeds the app0 partition")
 
