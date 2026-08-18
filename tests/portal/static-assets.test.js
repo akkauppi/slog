@@ -258,6 +258,8 @@ test("manifest colors and service-worker cache use the portal release tokens", a
   const manifest = JSON.parse(
     await readFile(path.join(portalRoot, "manifest.webmanifest"), "utf8"),
   );
+  assert.equal(manifest.name, "SLOG sauna logger");
+  assert.equal(manifest.short_name, "SLOG");
   assert.equal(manifest.background_color, "#f3f3f0");
   assert.equal(manifest.theme_color, "#171717");
 

@@ -134,7 +134,7 @@ export class DiagnosticBuffer {
       ])
       .sort(([left], [right]) => (left === right ? 0 : left < right ? -1 : 1));
     const heading = [
-      "Sauna logger portal diagnostics",
+      "SLOG portal diagnostics",
       "format_version=1",
       `exported_at=${isoTimestamp(exportedAt, "export timestamp")}`,
       `retained_entries=${this.#entries.length}`,

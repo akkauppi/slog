@@ -55,7 +55,7 @@ test("diagnostic export has a deterministic versioned shape and sorted context",
       { exportedAt: EXPORT_TIME },
     ),
     [
-      "Sauna logger portal diagnostics",
+      "SLOG portal diagnostics",
       "format_version=1",
       "exported_at=2026-08-18T08:10:11.000Z",
       "retained_entries=1",
