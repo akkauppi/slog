@@ -648,7 +648,11 @@ test("esptool adapter pins safe write settings and requires device MD5 verificat
   const instances = {};
   class Transport {
     constructor(port, tracing) { instances.port = port; instances.tracing = tracing; }
-    async disconnect() { instances.disconnected = true; }
+    async setRTS(value) { instances.resetOrder.push(["rts", value]); }
+    async disconnect() {
+      instances.resetOrder.push(["disconnect"]);
+      instances.disconnected = true;
+    }
   }
   class ESPLoader {
     constructor(options) {
@@ -683,8 +687,12 @@ test("esptool adapter pins safe write settings and requires device MD5 verificat
     {
       eraseAll: true,
       onDiagnostic: (entry) => { diagnostics.push(entry); throw new Error("ignored"); },
+      resetWait: async (milliseconds) => {
+        instances.resetOrder.push(["wait", milliseconds]);
+      },
     },
   );
+  instances.resetOrder = [];
   const port = {};
   const connected = await adapter.connect(port);
   const expectedDeviceIdHash = await nodeSha256(
@@ -738,7 +746,14 @@ test("esptool adapter pins safe write settings and requires device MD5 verificat
   assert.equal(typeof instances.write.calculateMD5Hash, "function");
   await adapter.reset();
   await adapter.close();
-  assert.equal(instances.after, "hard_reset");
+  assert.equal(instances.after, undefined);
+  assert.deepEqual(instances.resetOrder, [
+    ["rts", true],
+    ["wait", 200],
+    ["rts", false],
+    ["wait", 200],
+    ["disconnect"],
+  ]);
   assert.equal(instances.disconnected, true);
   assert.ok(diagnostics.some((entry) =>
     entry.source === "esptool" &&
@@ -755,6 +770,7 @@ test("esptool adapter rejects 2MB and unknown JEDEC capacities before identity o
   ]) {
     const calls = { mac: 0, write: 0, reset: 0, close: 0 };
     class Transport {
+      async setRTS() { calls.reset += 1; }
       async disconnect() { calls.close += 1; }
     }
     class ESPLoader {
@@ -768,9 +784,11 @@ test("esptool adapter rejects 2MB and unknown JEDEC capacities before identity o
       async main() { return "ESP32-C3"; }
       async readFlashId() { return (capacityCode << 16) | 0x40ef; }
       async writeFlash() { calls.write += 1; }
-      async after() { calls.reset += 1; }
     }
-    const adapter = createEsptoolJsAdapter({ Transport, ESPLoader });
+    const adapter = createEsptoolJsAdapter(
+      { Transport, ESPLoader },
+      { resetWait: async () => {} },
+    );
     await assert.rejects(
       adapter.connect({}),
       (error) =>
@@ -787,7 +805,7 @@ test("esptool adapter rejects 2MB and unknown JEDEC capacities before identity o
     assert.equal(calls.write, 0, `${name} capacity must fail before writing`);
     await adapter.reset();
     await adapter.close();
-    assert.equal(calls.reset, 1);
+    assert.equal(calls.reset, 2);
     assert.equal(calls.close, 1);
   }
 });

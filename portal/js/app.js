@@ -530,7 +530,7 @@ function showConnect({ afterInstall = false } = {}) {
     kicker: "Stage 2 · Verify logger",
     title: afterInstall ? "Reconnect the running logger" : "Verify the running logger",
     description: afterInstall
-      ? "The installer reset and closed the bootloader connection. Keep USB connected, choose the application port after it appears, and verify the exact firmware identity and partition layout."
+      ? "The installer pulsed reset and closed the bootloader connection. Release BOOT, wait for the application port, then choose it. If it stays silent, press RESET once without holding BOOT; if necessary, remove all USB and external power before reconnecting."
       : "Choose the logger running the project firmware. Close PlatformIO, a serial monitor, or any other application using the port.",
   });
   configureAction(primaryAction, {

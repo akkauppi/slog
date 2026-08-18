@@ -2,6 +2,8 @@ import { md5Hex, sha256Hex } from "./flashing.js";
 
 const DEVICE_ID_DOMAIN = "sauna_logger:web-flash-device-id:v1\0";
 const CANONICAL_MAC = /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/;
+const RESET_ASSERT_MS = 200;
+const RESET_SETTLE_MS = 200;
 
 const EXPECTED_IMAGES = [
   { role: "bootloader", address: 0x0, maximumSize: 0x8000 },
@@ -32,6 +34,10 @@ function adapterError(code, message) {
   return error;
 }
 
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 async function deviceIdHash(loader) {
   if (typeof loader.chip?.readMac !== "function") {
     throw adapterError(
@@ -52,7 +58,12 @@ async function deviceIdHash(loader) {
 
 export function createEsptoolJsAdapter(
   esptoolModule,
-  { baudRate = 115200, onDiagnostic = null, logger = null } = {},
+  {
+    baudRate = 115200,
+    onDiagnostic = null,
+    logger = null,
+    resetWait = wait,
+  } = {},
 ) {
   if (typeof esptoolModule?.Transport !== "function" || typeof esptoolModule?.ESPLoader !== "function") {
     throw new TypeError("esptool-js module must export Transport and ESPLoader");
@@ -60,6 +71,7 @@ export function createEsptoolJsAdapter(
   if (!Number.isInteger(baudRate) || baudRate <= 0) throw new TypeError("baudRate must be a positive integer");
   if (onDiagnostic !== null && typeof onDiagnostic !== "function") throw new TypeError("onDiagnostic must be a function");
   if (logger !== null && typeof logger !== "function") throw new TypeError("logger must be a function");
+  if (typeof resetWait !== "function") throw new TypeError("resetWait must be a function");
   const diagnostic = onDiagnostic ?? (logger ? (entry) => logger(entry.message) : null);
   let transport = null;
   let loader = null;
@@ -167,7 +179,20 @@ export function createEsptoolJsAdapter(
     async reset() {
       if (!loader) return;
       targetValidated = false;
-      await loader.after("hard_reset");
+      if (typeof transport?.setRTS !== "function") {
+        throw adapterError(
+          "target-reset-unavailable",
+          "the serial transport cannot reset the ESP32-C3",
+        );
+      }
+      // esptool-js 0.6.0's HardReset only releases RTS. The USB Serial/JTAG
+      // connection sequence already ends with RTS released, so relying on
+      // loader.after("hard_reset") leaves the flasher stub running. Pulse the
+      // ESP32-C3 reset line explicitly, matching esptool's hard-reset order.
+      await transport.setRTS(true);
+      await resetWait(RESET_ASSERT_MS);
+      await transport.setRTS(false);
+      await resetWait(RESET_SETTLE_MS);
     },
 
     async close() {

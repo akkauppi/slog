@@ -1090,7 +1090,7 @@ export class FlashInstallationUi {
       kicker: "Stage 1 · Installation complete",
       title: "Firmware written and verified",
       description:
-        "The installer verified the images, reset the board, and closed the bootloader connection. Keep USB connected and verify the running logger next.",
+        "The installer verified the images, pulsed reset, and closed the bootloader connection. Release BOOT and verify the running logger next. If it stays silent, press RESET once without holding BOOT.",
       message: "Installation completed without a whole-flash erase.",
       kind: "success",
     });
