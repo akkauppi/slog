@@ -800,7 +800,7 @@ export class DataWorkspace {
         suggestedName: `session-${session.id}.slog`,
         excludeAcceptAllOption: true,
         types: [{
-          description: "Sauna logger raw file",
+          description: "SLOG raw record",
           accept: { "application/octet-stream": [".slog"] },
         }],
       });

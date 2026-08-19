@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#171717">
     <meta
       name="description"
-      content="Prepare a SLOG sauna logger, save its records, and analyze measurements locally."
+      content="SLOG is open source software for logging saunas: prepare a logger, preserve records, and analyze measurements locally."
     >
     <meta
       http-equiv="Content-Security-Policy"
@@ -60,11 +60,12 @@
     <main id="main" class="page">
       <div class="portal-view" id="prepare-view" data-view="prepare">
       <section class="page-intro" aria-labelledby="page-title">
-        <p class="section-label">Local USB utility</p>
+        <p class="section-label">Open-source sauna infrastructure</p>
         <h1 id="page-title" tabindex="-1">Prepare a sauna logger</h1>
         <p>
-          Install the firmware, verify the logger, and assign its eight
-          temperature probes. Everything stays in this browser.
+          SLOG is open source software for logging saunas. Install the firmware,
+          verify the logger, and assign its eight temperature probes. Everything
+          stays in this browser.
         </p>
       </section>
 
@@ -100,10 +101,11 @@
 
           <section class="task" id="install-task" aria-labelledby="install-title">
             <p class="section-label" id="install-kicker">Stage 1 · Install firmware</p>
-            <h2 id="install-title" tabindex="-1">Install the project firmware</h2>
+            <h2 id="install-title" tabindex="-1">Install SLOG firmware</h2>
             <p class="task__description" id="install-description">
-              Put the XIAO ESP32-C3 into BOOT mode, choose it in the browser,
-              then review the bundled release before anything is written.
+              Connect the XIAO ESP32-C3 normally and choose it in the browser.
+              SLOG enters download mode automatically, then identifies the board
+              before anything can be written.
             </p>
 
             <div
@@ -114,20 +116,37 @@
               hidden
             ></div>
 
-            <ol class="boot-instructions" id="boot-instructions">
+            <ol class="connection-instructions" id="connection-instructions">
               <li>
-                <strong>Disconnect USB.</strong>
-                Leave the probes and other wiring undisturbed.
+                <strong>Connect USB normally.</strong>
+                No button sequence is normally required, including on a new board.
               </li>
               <li>
-                <strong>Hold BOOT and reconnect USB.</strong>
-                Release BOOT after the computer detects the board.
+                <strong>Free the serial port.</strong>
+                Close other SLOG tabs, PlatformIO, and serial monitors.
               </li>
               <li>
-                <strong>Choose the bootloader port.</strong>
-                Close PlatformIO or any serial monitor first.
+                <strong>Choose the logger.</strong>
+                SLOG switches it into ROM download mode and checks the target.
               </li>
             </ol>
+
+            <details class="manual-boot" id="manual-boot-fallback" hidden>
+              <summary>Manual connection recovery</summary>
+              <p>
+                Automatic download mode did not work. Use this physical fallback
+                only for the same XIAO ESP32-C3 you intended to install.
+              </p>
+              <ol>
+                <li>Disconnect USB and any other power from the board.</li>
+                <li>Hold <strong>BOOT</strong>, reconnect USB, then release BOOT after the board appears.</li>
+                <li>Choose the logger again. After flashing, press RESET or power-cycle it if the running logger does not appear.</li>
+              </ol>
+              <p>
+                If other power must remain connected, hold BOOT and press RESET
+                once instead of reconnecting USB.
+              </p>
+            </details>
 
             <dl class="firmware-summary" id="firmware-summary" hidden>
               <div>
@@ -150,7 +169,7 @@
 
             <ol class="installation-stages" id="installation-stages" hidden>
               <li>Validate manifest and image hashes</li>
-              <li>Prepare the ESP32-C3 bootloader</li>
+              <li>Enter ROM download mode and identify the ESP32-C3</li>
               <li>Write firmware</li>
               <li>Verify the written image</li>
             </ol>
@@ -165,7 +184,7 @@
 
             <div class="actions">
               <button class="button button--primary" id="install-primary" type="button">
-                Choose bootloader device
+                Choose logger
               </button>
               <button class="button button--secondary" id="install-secondary" type="button">
                 Firmware already installed
@@ -174,7 +193,7 @@
             </div>
 
             <p class="privacy-note" id="install-note">
-              The portal accepts only its versioned release manifest and
+              SLOG accepts only its versioned release manifest and
               SHA-256-verified image set. There is no file picker or erase option.
             </p>
           </section>
@@ -301,7 +320,7 @@
 
       <section class="portal-view data-view" id="records-view" data-view="records" aria-labelledby="records-title" hidden>
         <div class="page-intro page-intro--compact">
-          <p class="section-label">Local USB records</p>
+          <p class="section-label">SLOG records</p>
           <h1 id="records-title" tabindex="-1">Stored sauna records</h1>
           <p>
             Download CRC-checked raw files from the logger. Save and verify is
@@ -332,7 +351,7 @@
             <button class="button button--secondary" id="records-refresh" type="button" hidden>Refresh records</button>
           </div>
           <p class="privacy-note">
-            The portal checks the firmware before reading records. Downloads
+            SLOG checks the firmware before reading records. Downloads
             pause while a recording is active. Nothing is uploaded.
           </p>
         </section>
@@ -353,7 +372,7 @@
 
       <section class="portal-view data-view" id="analyze-view" data-view="analyze" aria-labelledby="analyze-title" hidden>
         <div class="page-intro page-intro--compact">
-          <p class="section-label">Offline analysis</p>
+          <p class="section-label">SLOG analysis</p>
           <h1 id="analyze-title" tabindex="-1">Analyze sauna sessions</h1>
           <p>
             Open one or more <code>.slog</code> files to view charts and export
@@ -477,7 +496,7 @@
     </aside>
 
     <footer class="site-footer">
-      <p>Runs locally in your browser. Firmware files are bundled; device data is not uploaded.</p>
+      <p>SLOG runs locally in your browser. Firmware files are bundled; device data is not uploaded.</p>
       <p>Desktop browser with Web Serial · HTTPS or localhost</p>
     </footer>
 
@@ -551,7 +570,7 @@
         <p class="section-label">Write confirmation</p>
         <h2 id="install-dialog-title">Install this verified release?</h2>
         <p>
-          The portal will write the bundled sauna logger firmware to the selected
+          SLOG will write its bundled sauna logger firmware to the selected
           ESP32-C3. It will not erase the whole flash, and it will not accept a
           replacement file.
         </p>

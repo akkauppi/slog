@@ -349,15 +349,15 @@ h3 {
   min-height: 310px;
 }
 
-.boot-instructions {
+.connection-instructions {
   margin: 1.75rem 0 0;
   padding: 0;
   border-top: 1px solid var(--line);
   list-style: none;
-  counter-reset: boot-step;
+  counter-reset: connection-step;
 }
 
-.boot-instructions li {
+.connection-instructions li {
   min-height: 64px;
   display: grid;
   grid-template-columns: 2.25rem minmax(0, 1fr);
@@ -365,11 +365,11 @@ h3 {
   padding-block: 0.65rem;
   border-bottom: 1px solid var(--line);
   color: #3f3f3b;
-  counter-increment: boot-step;
+  counter-increment: connection-step;
 }
 
-.boot-instructions li::before {
-  content: counter(boot-step, decimal-leading-zero);
+.connection-instructions li::before {
+  content: counter(connection-step, decimal-leading-zero);
   grid-column: 1;
   grid-row: 1 / span 2;
   color: var(--muted);
@@ -378,11 +378,34 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
-.boot-instructions strong {
+.connection-instructions strong {
   display: block;
   grid-column: 2;
   color: var(--ink);
   font-weight: 700;
+}
+
+.manual-boot {
+  max-width: var(--measure);
+  margin-top: 1rem;
+  padding-block: 0.8rem;
+  border-block: 1px solid var(--line);
+  color: #3f3f3b;
+}
+
+.manual-boot summary {
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.manual-boot p,
+.manual-boot ol {
+  margin-bottom: 0;
+}
+
+.manual-boot li + li {
+  margin-top: 0.45rem;
 }
 
 .firmware-summary {

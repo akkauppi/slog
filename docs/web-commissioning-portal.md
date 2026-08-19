@@ -26,20 +26,31 @@ command-line use and for the deferred warm-one-at-a-time method.
 
 ## Firmware installation
 
-Installation is intentionally not one opaque button. The page explains how to
-enter the ROM bootloader, asks the user to choose the device, validates the
-bundled release, asks for an explicit write confirmation, displays progress,
-then verifies the running application separately.
+Installation is intentionally not one opaque button. The page asks the user to
+choose a normally connected logger, automatically enters the ESP32-C3 ROM
+download mode, validates the target and bundled release, asks for an explicit
+write confirmation, displays progress, then verifies the running application
+separately.
 
-To enter BOOT mode:
+The normal path requires no physical button sequence:
 
-1. disconnect USB;
-2. hold the XIAO's **BOOT** button while reconnecting USB; and
-3. release **BOOT** after the computer detects the board, then choose that
-   bootloader port in the browser.
+1. connect the XIAO ESP32-C3 normally over a USB data cable;
+2. close PlatformIO, other SLOG tabs, and serial monitors; and
+3. choose the logger in the browser.
 
-Close PlatformIO and other serial monitors first. If the port does not appear,
-repeat the sequence rather than choosing an unrelated serial device.
+The portal's pinned esptool runtime uses the ESP32-C3
+[USB Serial/JTAG controller](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-guides/usb-serial-jtag-console.html)
+automatic reset sequence. That controller is fixed-function chip hardware
+rather than part of the installed SLOG firmware, so automatic download mode is
+also the expected first path for a factory-new board.
+
+Manual connection recovery is hidden during the normal flow and is revealed
+only after automatic connection fails. Disconnect USB and any other power,
+hold **BOOT** while reconnecting USB, release it after the board appears, then
+choose the logger again. If another power source must remain connected, hold
+**BOOT** and press **RESET** once instead. Manual recovery is a fallback for a
+missing device or failed ROM synchronization, not a remedy for a port owned by
+another tab or application.
 
 Web Serial access is exclusive across applications, tabs, and website origins.
 Before moving from the local portal to GitHub Pages, disconnect the logger and
@@ -63,7 +74,7 @@ cryptographic release signature.
 The four displayed stages are:
 
 1. validate the manifest and image hashes;
-2. prepare and identify the ESP32-C3 bootloader;
+2. enter ROM download mode and identify the ESP32-C3;
 3. write the bootloader, partition table, OTA data, and `app0` image at their
    generated offsets; and
 4. verify the written image data.
@@ -79,10 +90,11 @@ is disabled. Before the first write, the browser must successfully preserve the
 exact validated manifest and four images in a content-addressed CacheStorage
 cache, then round-trip a local recovery marker. That marker binds the package
 hash to a SHA-256 hash of the ESP32-C3 identity. A USB or power interruption is
-reported as an uncertain outcome, not success. Put the same board back into
-BOOT mode and choose **Recover installation**. Recovery restores and
-revalidates those exact cached bytes, rejects a different physical ESP32-C3,
-and does not offer an erase fallback.
+reported as an uncertain outcome, not success. Reconnect the same board and
+choose **Recover installation**; automatic download mode is tried first.
+Recovery restores and revalidates those exact cached bytes, rejects a different
+physical ESP32-C3, and does not offer an erase fallback. Use the revealed manual
+connection recovery only if that automatic attempt fails.
 
 Schema-1 packages are rejected before images are loaded or a serial port is
 requested. The sole exception is an exact schema-1 package already named by a
@@ -103,10 +115,10 @@ to the old mandatory verification. Closing the page releases the browser lock
 naturally while the durable marker remains available to the next recovery tab.
 
 After a successful write, the adapter asserts reset for 200 ms, releases it,
-waits another 200 ms, and closes the bootloader transport. Release **BOOT** and
-reconnect to the application serial port. If the port remains silent, press
-**RESET** once without holding **BOOT**; if the board has another power source,
-remove all power before reconnecting USB. The portal reads `SYS INFO` and
+waits another 200 ms, and closes the download transport. Wait for the running
+application serial port, then choose it. If manual connection recovery was used
+and the port remains silent, press **RESET** once or remove all power before
+reconnecting USB. The portal reads `SYS INFO` and
 requires the expected protocol, `sauna_logger` product, `sauna_ota_v1`
 partition identifier,
 OTA application slot, firmware version, and source commit from the manifest.
@@ -124,20 +136,21 @@ Commissioning protocol version 1 does not yet report the bootloader's hashed
 hardware identity from the running application, so the user must still choose
 the serial port that reappears from the same physical board. The portal proves
 the running release identity at that boundary, but cannot cryptographically
-bind the application port to the earlier bootloader port.
+bind the application port to the earlier download-mode connection.
 
 One bounded replacement path exists for a completed, device-MD5-verified write
 whose running firmware explicitly rejects `SYS INFO` as legacy or
 incompatible. This path is never available while a write outcome is uncertain.
 The portal keeps the old `VERIFICATION_REQUIRED` marker and origin-wide lock
 while it downloads, validates, and caches the current published package. It
-then asks for the original logger in BOOT mode and compares the bootloader's
-hashed hardware identity with the old marker. A different board, download or
-validation failure, chooser cancellation, or any other definite pre-write
-failure leaves the old marker unchanged. Only after package and same-board
-preflight, immediately before writing may begin, is the marker atomically
-advanced to `WRITE_REQUIRED` for the current package. The normal exact runtime
-verification must still succeed before that new marker is cleared.
+then asks for the original logger, enters download mode automatically, and
+compares the ROM loader's hashed hardware identity with the old marker. A
+different board, download or validation failure, chooser cancellation, or any
+other definite pre-write failure leaves the old marker unchanged. Only after
+package and same-board preflight, immediately before writing may begin, is the
+marker atomically advanced to `WRITE_REQUIRED` for the current package. The
+normal exact runtime verification must still succeed before that new marker is
+cleared.
 
 ## Probe commissioning
 

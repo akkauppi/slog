@@ -30,6 +30,9 @@ direction remains in [`community-project-plan.md`](community-project-plan.md).
 - The offline-first browser portal can install a commit-identified firmware
   package, verify a running logger, commission probes, inspect retention status,
   CRC-check and preserve records, and guard whole-run removal.
+- Firmware installation uses the ESP32-C3's automatic USB download mode by
+  default, including for factory-new boards. Physical BOOT instructions remain
+  hidden unless automatic connection fails.
 - Portal analysis validates raw `.slog` structures locally, keeps unknown power
   gaps explicit, supports reversible linked-run/per-segment views, plots all
   eight temperatures plus the selected probe's derivative, and exports CSV or

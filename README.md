@@ -1,8 +1,9 @@
 # SLOG — sauna temperature logger
 
-Power-loss-resilient session logger for a Seeed Studio XIAO ESP32-C3 and eight
-powered DS18B20 temperature sensors. Wi-Fi is disabled. Measurements are
-available over USB, while detected sauna sessions are stored in internal flash.
+SLOG is open source software for logging saunas. The reference logger is a
+power-loss-resilient Seeed Studio XIAO ESP32-C3 with eight powered DS18B20
+temperature sensors. Wi-Fi is disabled. Measurements are available over USB,
+while detected sauna sessions are stored in internal flash.
 
 The repository contains the embedded logger, USB extraction tools, CRC-safe log
 parser, and self-contained interactive analysis reports. Development invariants
@@ -27,6 +28,11 @@ column, preserve and manage logger records, analyze raw `.slog` files, and
 export selected data as CSV or Excel. The selected temperature probe also has a
 heating/cooling-rate chart, and linked power-restored segments can be viewed
 either as one run or separately without changing the raw metadata.
+
+Firmware installation normally needs no button sequence, even on a new board:
+choose the normally connected logger and SLOG enters ROM download mode
+automatically. Manual BOOT access is retained only as a connection-recovery
+fallback.
 
 Logger access requires Web Serial, so use a current desktop Chrome or Edge on
 Windows, macOS, or Linux. File-only analysis works in other modern browsers.
