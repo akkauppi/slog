@@ -1,6 +1,16 @@
 {
-  "name": "sauna-logger-portal",
+  "name": "slog-sauna-logger",
+  "description": "Offline-first firmware installation, record preservation, and analysis for the SLOG sauna logger.",
   "private": true,
+  "license": "Apache-2.0",
+  "homepage": "https://akkauppi.github.io/slog/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akkauppi/slog.git"
+  },
+  "bugs": {
+    "url": "https://github.com/akkauppi/slog/issues"
+  },
   "type": "module",
   "scripts": {
     "test": "node --test tests/portal/*.test.js",

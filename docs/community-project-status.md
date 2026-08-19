@@ -10,10 +10,13 @@ direction remains in [`community-project-plan.md`](community-project-plan.md).
 - Repository: `akkauppi/slog`
 - Renamed from `akkauppi/saunan` when the SLOG brand became the public identity.
 - Default branch: `main`
-- Pull requests #1 through #5 are merged.
+- Pull requests #1 through #6 are merged.
 - Their short-lived feature branches have been removed locally and remotely.
 - GitHub Pages uses the repository's `Portal` Actions workflow and publishes
   **[akkauppi.github.io/slog](https://akkauppi.github.io/slog/)**.
+- The GitHub About panel identifies the hosted portal and carries focused
+  sauna, logger, ESP32-C3, DS18B20, PlatformIO, Web Serial, and offline-first
+  discovery topics.
 
 ## Delivered foundation
 
@@ -39,6 +42,12 @@ direction remains in [`community-project-plan.md`](community-project-plan.md).
   Excel workbooks.
 - The first de-identified real-world sauna run remains in the repository with
   reproducible analysis notes and output.
+- Repository governance now defines contribution and maintainer review rules,
+  a code of conduct, private security reporting, issue and pull request
+  templates, code ownership, and automated dependency-update metadata.
+- Licensing follows the planned material split: Apache-2.0 for software,
+  CC BY 4.0 for documentation, CERN-OHL-P-2.0 for hardware designs, and CC0 for
+  measurements and catalog metadata. Vendored code retains its upstream terms.
 
 ## Verification state
 

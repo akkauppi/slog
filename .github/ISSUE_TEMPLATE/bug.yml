@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible firmware, portal, analysis, or documentation problem.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve SLOG. Do not attach raw `.slog` files, probe maps, or diagnostics until you have checked them for stable probe ROM addresses and personal context. Report security-sensitive problems privately through SECURITY.md.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Firmware
+        - Firmware installation
+        - Probe commissioning
+        - Record preservation or retention
+        - Portal analysis or export
+        - Documentation
+        - Hardware guidance
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Firmware version, source commit, or hosted portal date if known.
+      placeholder: 0.3.0-dev / 4e39aa5
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened?
+      description: Include the exact error and the last safe state of the logger or data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include browser/OS or board details when relevant. Power removal is a normal test condition; say exactly when it occurred.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Remove probe ROM addresses, exact locations, personal context, and unrelated serial output.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: This report does not expose sensitive data or an unpatched security vulnerability.
+          required: true
