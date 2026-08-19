@@ -1,0 +1,50 @@
+name: Feature proposal
+description: Propose a focused improvement to SLOG.
+title: "[Proposal]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the need before the implementation. Large changes should preserve SLOG's deliberately offline, power-loss-resilient design.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Firmware
+        - Portal
+        - Analysis or export
+        - Hardware design
+        - Documentation
+        - Community data
+        - Project infrastructure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What is difficult or impossible today, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain observable behavior rather than only an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Alternatives and tradeoffs
+      description: Include effects on power loss, privacy, data compatibility, browser support, or hardware safety.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Scope check
+      options:
+        - label: I reviewed the project plan and existing issues for related work.
+          required: true
+        - label: This proposal does not assume Wi-Fi, invented time gaps, discovery-order probe identity, or automatic filesystem formatting.
+          required: true

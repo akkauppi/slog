@@ -7,7 +7,8 @@ __pycache__/
 *.slog
 *.pending.json
 crash*.bin
-/data/
+/data/*
+!/data/README.md
 /reports/
 /portal/generated/
 /.portal-server/

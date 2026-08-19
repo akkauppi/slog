@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/akkauppi/slog/security/advisories/new
+    about: Use a private report for security, integrity, or destructive-operation vulnerabilities.
+  - name: Open the SLOG portal
+    url: https://akkauppi.github.io/slog/
+    about: Install, commission, preserve records, and analyze sessions locally.
