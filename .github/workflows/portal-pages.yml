@@ -8,7 +8,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pages
+  # A Pages deployment and every pull-request build used to share one group.
+  # GitHub keeps only one pending run in a concurrency group, so a burst of
+  # Dependabot PRs could cancel the queued main deployment and leave the badge
+  # reporting a failure. Keep repeated work for the same ref together without
+  # letting independent PRs block or replace the deployable main run.
+  group: pages-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
