@@ -144,6 +144,36 @@ test("assembled-probe commissioning is the primary portal workflow", async () =>
   );
 });
 
+test("firmware installation tries automatic download mode before manual BOOT recovery", async () => {
+  const html = await readFile(path.join(portalRoot, "index.html"), "utf8");
+  const source = await readFile(
+    path.join(portalRoot, "js/flash-ui.js"),
+    "utf8",
+  );
+  const readme = await readFile(path.join(repositoryRoot, "README.md"), "utf8");
+
+  assert.match(html, /Connect USB normally/);
+  assert.match(html, /No button sequence is normally required, including on a new board/);
+  assert.match(html, /id="manual-boot-fallback" hidden/);
+  assert.match(html, /Automatic download mode did not work/);
+  assert.doesNotMatch(html, /Put the XIAO ESP32-C3 into BOOT mode/);
+  assert.match(source, /SLOG will enter ROM download mode automatically/);
+  assert.match(
+    source,
+    /#showReadyToConnect\(\{ showManualFallback = false \} = \{\}\)/,
+  );
+  assert.match(
+    source,
+    /#showReadyToConnect\(\{ showManualFallback: true \}\)/,
+    "a failed initial selection must reveal the physical recovery path",
+  );
+  assert.match(
+    source,
+    /if \(showManualFallback\) this\.#showManualBootFallback\(\)/,
+  );
+  assert.match(readme, /SLOG is open source software for logging saunas/);
+});
+
 test("persisted flash recovery stays locked to the prepared package", async () => {
   const source = await readFile(
     path.join(portalRoot, "js/flash-ui.js"),

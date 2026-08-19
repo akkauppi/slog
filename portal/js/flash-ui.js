@@ -23,12 +23,12 @@ function element(id) {
 
 function firmwareErrorMessage(error, unsafe) {
   if (error?.name === "NotFoundError") {
-    return "No bootloader device was selected. Put the XIAO ESP32-C3 in BOOT mode and choose it when you are ready.";
+    return "No logger was selected. Connect it normally and choose it when you are ready. If it did not appear, use the manual connection recovery shown below.";
   }
   if (error?.name === "SecurityError") {
     return "The browser refused serial access. Use this top-level HTTPS or localhost page and try again.";
   }
-  const serialOpenMessage = serialPortOpenErrorMessage(error, "bootloader device");
+  const serialOpenMessage = serialPortOpenErrorMessage(error, "logger");
   if (serialOpenMessage) return serialOpenMessage;
   const code = String(error?.code ?? "");
   if (["manifest-fetch-failed", "manifest-unavailable", "http-error"].includes(code)) {
@@ -70,7 +70,7 @@ function firmwareErrorMessage(error, unsafe) {
     return "A bundled firmware image failed its size or SHA-256 integrity check. Nothing was written; use a complete portal release.";
   }
   if (unsafe || /write|flash|disconnect|transport|reset|close/i.test(code)) {
-    return "Firmware installation was interrupted. Put the same board back into BOOT mode and recover with the same package. Do not erase flash.";
+    return "Firmware installation was interrupted. Reconnect the same board and recover with the same package. Use manual connection recovery only if automatic download mode fails. Do not erase flash.";
   }
   if (error instanceof FlashWorkflowError) return error.message;
   return error?.message
@@ -230,7 +230,8 @@ export class FlashInstallationUi {
     this.title = element("install-title");
     this.description = element("install-description");
     this.message = element("install-message");
-    this.bootInstructions = element("boot-instructions");
+    this.connectionInstructions = element("connection-instructions");
+    this.manualBootFallback = element("manual-boot-fallback");
     this.summary = element("firmware-summary");
     this.release = element("install-release");
     this.target = element("install-target");
@@ -341,7 +342,7 @@ export class FlashInstallationUi {
 
       // Validate and durably cache the new release without changing the old
       // verification marker. The old package remains authoritative through
-      // download, BOOT selection, same-device checking, and confirmation.
+      // download, device selection, same-device checking, and confirmation.
       const downloaded = await downloadCurrentFirmwarePackage();
       const persisted = await this.recoveryStore.persistPreparedPackage(downloaded);
       const adapter = await loadPinnedEsptoolJsAdapter({
@@ -529,6 +530,16 @@ export class FlashInstallationUi {
     this.summary.hidden = false;
   }
 
+  #hideManualBootFallback() {
+    this.manualBootFallback.open = false;
+    this.manualBootFallback.hidden = true;
+  }
+
+  #showManualBootFallback() {
+    this.manualBootFallback.hidden = false;
+    this.manualBootFallback.open = true;
+  }
+
   #showPreparingPackage() {
     this.#setTask({
       kicker: "Stage 1 · Install firmware",
@@ -539,7 +550,8 @@ export class FlashInstallationUi {
         ? "An earlier installation may not have finished. This exact package must be checked before recovery."
         : "No serial permission has been requested yet.",
     });
-    this.bootInstructions.hidden = false;
+    this.connectionInstructions.hidden = false;
+    this.#hideManualBootFallback();
     this.note.hidden = false;
     this.#setStage(0, 0);
     this.#button(this.primary, {
@@ -646,7 +658,7 @@ export class FlashInstallationUi {
     }
   }
 
-  #showReadyToConnect() {
+  #showReadyToConnect({ showManualFallback = false } = {}) {
     const recovering = Boolean(this.recovery);
     const replacingVerification = Boolean(this.verificationReplacement);
     this.#setTask({
@@ -655,27 +667,29 @@ export class FlashInstallationUi {
         ? "Install current firmware on the same logger"
         : recovering
           ? "Recover the same firmware package"
-          : "Enter BOOT mode",
+          : "Connect the logger",
       description: replacingVerification
-        ? "Put the logger that failed the running-firmware check into BOOT mode. The portal will reject every other physical ESP32-C3 before writing."
+        ? "Connect the logger that failed the running-firmware check normally. SLOG will enter download mode automatically and reject every other physical ESP32-C3 before writing."
         : recovering
-          ? "Put the same XIAO ESP32-C3 into BOOT mode. The portal will reuse only the package whose integrity was checked above."
-        : "Disconnect USB, hold BOOT while reconnecting it, then release BOOT after the computer detects the board.",
+          ? "Connect the same XIAO ESP32-C3 normally. SLOG will enter download mode automatically and reuse only the package checked above."
+        : "Connect the XIAO normally, then choose it. SLOG will enter ROM download mode automatically; no button sequence is normally required.",
       message: replacingVerification
         ? "The current package is validated and cached. The previous verification record is still protected until this logger is identified."
         : "The bundled package passed its manifest, size, and SHA-256 checks.",
       kind: "success",
     });
-    this.bootInstructions.hidden = false;
+    this.connectionInstructions.hidden = false;
+    if (showManualFallback) this.#showManualBootFallback();
+    else this.#hideManualBootFallback();
     this.note.hidden = false;
     this.#showSummary();
     this.#setStage(1);
     this.#button(this.primary, {
       label: replacingVerification
-        ? "Choose original logger bootloader"
+        ? "Choose original logger"
         : recovering
-          ? "Choose device for recovery"
-          : "Choose bootloader device",
+          ? "Choose logger for recovery"
+          : "Choose logger",
       // connect() must be the first awaited operation in this user gesture.
       handler: () => this.#connectBootloader(),
       hidden: false,
@@ -699,10 +713,11 @@ export class FlashInstallationUi {
       message: firmwareErrorMessage(error, false),
       kind: "error",
     });
-    this.bootInstructions.hidden = true;
+    this.connectionInstructions.hidden = true;
+    this.#hideManualBootFallback();
     this.note.hidden = false;
     this.#button(this.primary, {
-      label: retryOwnership ? "Retry protected recovery" : "Choose bootloader device",
+      label: retryOwnership ? "Retry protected recovery" : "Choose logger",
       handler: retryOwnership
         ? () => {
             this.#showPreparingPackage();
@@ -723,11 +738,12 @@ export class FlashInstallationUi {
 
   async #connectBootloader() {
     this.#setBusy(true);
+    this.#hideManualBootFallback();
     this.#setTask({
-      kicker: "Stage 1 · Connect bootloader",
+      kicker: "Stage 1 · Connect logger",
       title: "Check the selected board",
       description:
-        "The browser chooser opens now. The portal will identify the chip before enabling any write.",
+        "The browser chooser opens now. After selection, SLOG automatically enters ROM download mode and identifies the chip before enabling any write.",
     });
     this.#showSummary();
     this.#setStage(1, 1);
@@ -767,7 +783,7 @@ export class FlashInstallationUi {
       } else if (this.controller?.snapshot.retry === FlashRetry.CONNECT) {
         this.#showRecovery(error);
       } else {
-        this.#showReadyToConnect();
+        this.#showReadyToConnect({ showManualFallback: true });
         this.#setMessage(message, "error");
       }
     } finally {
@@ -787,7 +803,8 @@ export class FlashInstallationUi {
         ? "Review the current fixed release. The previous verification record remains protected until you confirm this same-board write."
         : "Review the fixed release below. Installation writes only its declared images; there is no whole-flash erase or replacement-file option.",
     });
-    this.bootInstructions.hidden = true;
+    this.connectionInstructions.hidden = true;
+    this.#hideManualBootFallback();
     this.note.hidden = false;
     this.#showSummary();
     this.#setStage(2);
@@ -882,7 +899,7 @@ export class FlashInstallationUi {
       kicker: "Stage 1 · Installing",
       title: "Writing firmware",
       description:
-        "Keep USB connected. If power is interrupted, return this board to BOOT mode and recover with the same package; do not erase flash.",
+        "Keep USB connected. If power is interrupted, reconnect this same board and recover with the same package; do not erase flash.",
     });
     this.#showSummary();
     this.#setStage(2, 2);
@@ -995,14 +1012,16 @@ export class FlashInstallationUi {
         : "No firmware was written",
       description: installationUncertain
         ? "Keep this package and board together. Follow the action below; recovery never substitutes another file and never erases the whole flash."
-        : "Finish the safe reset or close action below, then return to the BOOT instructions before choosing another device.",
+        : "Finish the safe reset or close action below, then return to the connection instructions before choosing another device.",
       message: firmwareErrorMessage(error, installationUncertain),
       kind: "error",
     });
-    this.bootInstructions.hidden = [
+    this.connectionInstructions.hidden = [
       FlashRetry.RESET,
       FlashRetry.CLOSE,
     ].includes(retry);
+    if (actionableRetry === FlashRetry.CONNECT) this.#showManualBootFallback();
+    else this.#hideManualBootFallback();
     this.note.hidden = false;
     this.#showSummary();
     this.#setStage(installationUncertain ? 2 : 1, installationUncertain ? 2 : 1);
@@ -1011,7 +1030,7 @@ export class FlashInstallationUi {
       : actionableRetry === FlashRetry.CLOSE
         ? "Retry close"
         : actionableRetry === FlashRetry.CONNECT
-          ? "Return to BOOT instructions"
+          ? "Choose logger again"
           : actionableRetry === FlashRetry.REFLASH_SAME_PACKAGE
             ? "Recover installation"
             : installationUncertain
@@ -1043,7 +1062,7 @@ export class FlashInstallationUi {
         : "Finish the device check",
       description: installationUncertain
         ? "Keep USB connected. The portal is continuing only the recovery action selected by the flash controller."
-        : "The portal is completing the reset or close action before another bootloader can be chosen.",
+        : "The portal is completing the reset or close action before another logger can be chosen.",
     });
     this.#showSummary();
     this.#setStage(2, 2);
@@ -1095,11 +1114,12 @@ export class FlashInstallationUi {
       kicker: "Stage 1 · Installation complete",
       title: "Firmware written and verified",
       description:
-        "The installer verified the images, pulsed reset, and closed the bootloader connection. Release BOOT and verify the running logger next. If it stays silent, press RESET once without holding BOOT.",
+        "The installer verified the images, requested a normal restart, and closed the download connection. Verify the running logger next. If you used manual recovery and it stays silent, press RESET once or power-cycle the board.",
       message: "Installation completed without a whole-flash erase.",
       kind: "success",
     });
-    this.bootInstructions.hidden = true;
+    this.connectionInstructions.hidden = true;
+    this.#hideManualBootFallback();
     this.note.hidden = true;
     this.#showSummary();
     this.#setStage(4);

@@ -1,7 +1,7 @@
 {
   "name": "SLOG sauna logger",
   "short_name": "SLOG",
-  "description": "Prepare a logger, preserve raw records, and analyze sauna measurements locally.",
+  "description": "SLOG is open source software for logging saunas. Prepare a logger, preserve raw records, and analyze measurements locally.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -566,8 +566,8 @@ function showConnect({ afterInstall = false } = {}) {
     kicker: "Stage 2 · Verify logger",
     title: afterInstall ? "Reconnect the running logger" : "Verify the running logger",
     description: afterInstall
-      ? "Release BOOT and wait for the logger port to appear, then choose it. If it does not appear, press RESET once without holding BOOT."
-      : "Choose the logger running the project firmware. Close PlatformIO, a serial monitor, or any other application using the port.",
+      ? "Wait for the running logger port to appear, then choose it. If you used manual connection recovery and no port appears, press RESET once or power-cycle the board."
+      : "Choose the logger running SLOG firmware. Close PlatformIO, a serial monitor, or any other application using the port.",
   });
   configureAction(primaryAction, {
     label: "Choose logger",
