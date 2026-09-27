@@ -24,6 +24,8 @@ enum StatusFlag : uint16_t {
   kMappingReady = 1U << 5,
   kStorageReady = 1U << 6,
   kSessionActive = 1U << 7,
+  kColdStandby = 1U << 9,  // Cold checks every 150 s; heartbeat every 900 s.
+  kStandbyTest = 1U << 10, // With kColdStandby: heartbeat every 300 s.
   kSyntheticSample = 1U << 8,  // Explicit bench data; never a stored measurement.
 };
 
@@ -31,7 +33,7 @@ constexpr uint16_t kKnownStatusFlags =
     kChipTemperatureValid | kRtcExternalCrystalActive |
     kRtcCrystalFallbackObserved | kSensorSetDegraded |
     kBootCounterValid | kMappingReady | kStorageReady | kSessionActive |
-    kSyntheticSample;
+    kSyntheticSample | kColdStandby | kStandbyTest;
 
 struct Envelope {
   uint8_t schemaMajor = 0;
@@ -59,6 +61,11 @@ struct SampleV1 {
 
   uint8_t expectedMask() const;
   bool bootCounterValid() const;
+  bool standby() const { return (statusFlags & kColdStandby) != 0; }
+  uint32_t samplePeriodMs() const { return standby() ? 150000U : nominalPeriodMs; }
+  uint32_t transmitPeriodMs() const {
+    return standby() ? ((statusFlags & kStandbyTest) ? 300000U : 900000U) : nominalPeriodMs;
+  }
 };
 
 enum class DecodeError : uint8_t {

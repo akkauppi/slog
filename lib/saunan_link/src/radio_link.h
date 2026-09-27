@@ -20,6 +20,11 @@ class RadioLink {
   bool command(const String& line, bool recordingActive);
   void offer(const sauna_wire::SampleV1& sample);
   void poll();
+  // Loop-owned request; driver teardown/startup stays on the radio worker.
+  void setAwake(bool awake) { awakeWanted_ = awake; }
+  bool sleeping() const { return sleeping_; }
+  bool safeToSleep() const { return sleeping_ && !workerBusy_ && !recovering_ && !fault_; }
+
   bool receive(ReceivedDatagram& packet);
   const RadioConfig& config() const { return config_; }
   bool enabled() const { return enabled_; }
@@ -52,6 +57,10 @@ class RadioLink {
   std::atomic<uint32_t> recoveryAttempts_{0},recoveries_{0};
   TaskHandle_t recoveryTask_=nullptr;
   bool transportInitialized_=false;
+  bool awakeWanted_=true, powerWork_=false;
+  std::atomic<bool> sleeping_{false};
+  uint8_t workerOperation_=0; // 0 recovery, 1 suspend, 2 resume
+
   uint64_t retryAt_=0;
   uint32_t retryDelayMs_=1000;
   static void recoveryWorker(void* context);

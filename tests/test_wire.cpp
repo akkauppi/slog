@@ -439,6 +439,23 @@ void testTemperatureAndSessionEdges() {
 int main() {
   {
     auto sample = sampleForCount(8, 0xff);
+    sample.statusFlags |= sauna_wire::kColdStandby;
+    auto bytes = encode(sample);
+    auto decoded = sauna_wire::decodeDatagram(bytes.data(), bytes.size());
+    assert(decoded.sampleValid() && decoded.sample.samplePeriodMs()==150000);
+    assert(decoded.sample.transmitPeriodMs()==900000);
+    sample.statusFlags |= sauna_wire::kStandbyTest;
+    bytes=encode(sample); decoded=sauna_wire::decodeDatagram(bytes.data(),bytes.size());
+    assert(decoded.sampleValid() && decoded.sample.transmitPeriodMs()==300000);
+    sample.statusFlags |= sauna_wire::kSessionActive; sample.recordingSessionId=1;
+    assert(sauna_wire::validateSampleV1(sample)==DecodeError::kBadStatus);
+    sample.statusFlags &= ~sauna_wire::kSessionActive; sample.recordingSessionId=0;
+    sample.statusFlags &= ~sauna_wire::kColdStandby;
+    assert(sauna_wire::validateSampleV1(sample)==DecodeError::kBadStatus);
+  }
+
+  {
+    auto sample = sampleForCount(8, 0xff);
     sample.statusFlags |= sauna_wire::kSyntheticSample;
     const auto bytes = encode(sample);
     const auto decoded = sauna_wire::decodeDatagram(bytes.data(), bytes.size());

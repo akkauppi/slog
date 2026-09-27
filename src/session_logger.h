@@ -52,7 +52,8 @@ class SessionLogger {
   using ExtraCommandHandler = bool (*)(const String& command);
 
   bool begin();
-  bool addSample(const SensorReading& reading);
+  bool addSample(const SensorReading& reading, bool coldCheck = false);
+  void clearIdleWindow() { if (!active_) { ringHead_ = ringCount_ = 0; startCandidate_ = false; } }
   void setBootIdentity(uint64_t source, uint64_t nonce) { sourceId_ = source; bootNonce_ = nonce; }
   uint32_t bootId() const { return bootId_; }
   bool bootCounterValid() const { return bootCounterValid_; }

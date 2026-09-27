@@ -9,7 +9,9 @@ ESP32-C3 using PlatformIO with Arduino built as an ESP-IDF component.
 - Probe 1 is the top/farthest probe; probes descend toward the ESP at 20 cm
   intervals. Identity is by DS18B20 ROM address, never discovery order.
 - The 1-Wire bus is XIAO D2 / ESP32-C3 GPIO4 and uses powered three-wire probes.
-- Sample every 10 seconds. Start after any valid probe stays above 40 C for 30
+- Sample every 10 seconds while awake/heating/recording; cold standby polls every
+  150 seconds without adding sparse polls to the recording pre-trigger ring.
+  Wake fast sampling at 35 C or a probe fault. Start after any valid probe stays above 40 C for 30
   seconds. Automatic cooling completion requires probe 1 and at least six valid
   probes; otherwise the 12-hour cap or power loss ends the run.
 - Treat power removal at any instruction as normal. Never weaken CRC block

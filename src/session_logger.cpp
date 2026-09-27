@@ -407,13 +407,20 @@ void SessionLogger::pushRing(const SensorReading& reading) {
   if (ringCount_ < kPretriggerRecords) ++ringCount_;
 }
 
-bool SessionLogger::addSample(const SensorReading& reading) {
+bool SessionLogger::addSample(const SensorReading& reading, bool coldCheck) {
   latestReading_ = reading;
   haveLatestReading_ = true;
   if (!filesystemReady_) {
     retryFilesystem(reading.capturedAtMs);
   }
   if (!probeMappingReady_ || commissioningMode_) return false;
+  if (coldCheck && !active_) {
+    // Deliberate sparse polling must not masquerade as ten-second pre-trigger
+    // history. A healthy cold reading can still resolve interrupted-run state.
+    clearIdleWindow();
+    if (filesystemReady_) evaluateIdle(reading);
+    return true;
+  }
   // Keep the idle pre-trigger window in RAM through a transient mount outage.
   // An active session cannot coexist with an unavailable filesystem.
   pushRing(reading);

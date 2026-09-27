@@ -119,6 +119,9 @@ DecodeError validateSampleV1(const SampleV1& sample) {
   if ((sample.statusFlags & kMappingReady) == 0) {
     return DecodeError::kBadStatus;
   }
+  if ((sample.statusFlags & kStandbyTest) && !sample.standby()) return DecodeError::kBadStatus;
+  if (sample.standby() && (sample.statusFlags & (kSessionActive | kSyntheticSample)))
+    return DecodeError::kBadStatus;
   const bool sessionActive = (sample.statusFlags & kSessionActive) != 0;
   if (sessionActive != (sample.recordingSessionId != 0)) {
     return DecodeError::kBadStatus;

@@ -95,7 +95,7 @@ void RadioLink::stop() {
   busy_=false; pending_.clear();
 }
 bool RadioLink::requestRecovery() {
-  if(!recoveryTask_ || restartRequired_ || config_.mode!=RadioMode::EspNow) return false;
+  if(powerWork_ || sleeping_ || !recoveryTask_ || restartRequired_ || config_.mode!=RadioMode::EspNow) return false;
   if(recovering_) return true;
   recovering_=true;
   retryAt_=nowMs(); retryDelayMs_=1000;
@@ -105,10 +105,19 @@ void RadioLink::recoveryWorker(void* context) {
   auto* self=static_cast<RadioLink*>(context);
   for(;;) {
     ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-    ++self->recoveryAttempts_;
-    const bool ok=self->stopTransport() && self->startTransport();
-    if(ok) ++self->recoveries_;
-    else self->fault_=true;
+    bool ok = false;
+    if (self->workerOperation_ == 1) {
+      ok = self->stopTransport();
+      if (ok) self->sleeping_ = true;
+    } else if (self->workerOperation_ == 2) {
+      ok = self->startTransport();
+      self->sleeping_ = false;
+    } else {
+      ++self->recoveryAttempts_;
+      ok = self->stopTransport() && self->startTransport();
+      if (ok) ++self->recoveries_;
+    }
+    if (!ok) self->fault_ = true;
     // Publish completion only after SDK teardown/startup and all queue work.
     self->workerBusy_=false;
   }
@@ -129,10 +138,24 @@ void RadioLink::onSend(bool success) {
   if(callbacksEnabled_ && sendQueue_) xQueueOverwrite(sendQueue_,&success);
 }
 void RadioLink::offer(const sauna_wire::SampleV1& sample) {
-  if(enabled_ && !recovering_ && sender_ && sample.sourceId==localSourceId_ && pending_.offer(sample,nowMs())) ++offered_;
+  if(awakeWanted_ && !restartRequired_ && config_.mode==RadioMode::EspNow && !recovering_ && sender_ && sample.sourceId==localSourceId_ && pending_.offer(sample,nowMs())) ++offered_;
 }
 void RadioLink::poll() {
   const uint64_t now=nowMs();
+  if (powerWork_) {
+    if (workerBusy_) return;
+    powerWork_ = false;
+    if (fault_) { awakeWanted_ = true; sleeping_ = false; requestRecovery(); }
+  }
+  if (!recovering_ && sender_ && recoveryTask_ && !restartRequired_ &&
+      (awakeWanted_ || pending_.hasPending()) == sleeping_.load() && !busy_ &&
+      (sleeping_ || !pending_.hasPending())) {
+    workerOperation_ = (awakeWanted_ || pending_.hasPending()) ? 2 : 1;
+    powerWork_ = true; workerBusy_ = true;
+    xTaskNotifyGive(recoveryTask_);
+    return;
+  }
+  if (sleeping_) return;
   if(recovering_) {
     if(workerBusy_) return;
     if(enabled_ && !fault_ && retryAt_==UINT64_MAX) {
@@ -144,7 +167,7 @@ void RadioLink::poll() {
       }
       if(now>=retryAt_) {
         busy_=false; pending_.clear();
-        retryAt_=UINT64_MAX; workerBusy_=true;
+        retryAt_=UINT64_MAX; workerOperation_=0; workerBusy_=true;
         xTaskNotifyGive(recoveryTask_);
       }
       return;
@@ -187,13 +210,13 @@ bool RadioLink::save(const RadioConfig& config) {
 bool RadioLink::command(const String& line,bool recordingActive) {
   if(!line.startsWith("RADIO")) return false;
   if(line=="RADIO STATUS") {
-    Serial.printf("RADIO_STATUS protocol=1 mac=%02X%02X%02X%02X%02X%02X source=%016llX mode=%s active=%u fault=%u restart_required=%u channel=%u offered=%u sent=%u failed=%u replaced=%u expired=%u timeouts=%u recovering=%u recovery_attempts=%u recoveries=%u role=%s\n",
+    Serial.printf("RADIO_STATUS protocol=1 mac=%02X%02X%02X%02X%02X%02X source=%016llX mode=%s active=%u fault=%u restart_required=%u channel=%u offered=%u sent=%u failed=%u replaced=%u expired=%u timeouts=%u recovering=%u recovery_attempts=%u recoveries=%u sleeping=%u role=%s\n",
         localMac_[0],localMac_[1],localMac_[2],localMac_[3],localMac_[4],localMac_[5],
         static_cast<unsigned long long>(localSourceId_),config_.mode==RadioMode::EspNow?"espnow":"off",
-        enabled_.load(),fault_.load(),restartRequired_,config_.channel,offered_,sent_,failed_,pending_.replaced,pending_.expired,timeouts_,recovering_.load(),recoveryAttempts_.load(),recoveries_.load(),sender_?"logger":"receiver");
+        enabled_.load(),fault_.load(),restartRequired_,config_.channel,offered_,sent_,failed_,pending_.replaced,pending_.expired,timeouts_,recovering_.load(),recoveryAttempts_.load(),recoveries_.load(),sleeping_.load(),sender_?"logger":"receiver");
   } else if(line=="RADIO RECOVER") {
     Serial.printf("RADIO_RECOVER ok=%u\n",requestRecovery());
-  } else if(recovering_) Serial.println("RADIO_ERROR recovery_in_progress");
+  } else if(recovering_ || powerWork_) Serial.println("RADIO_ERROR recovery_in_progress");
   else if(recordingActive) Serial.println("RADIO_ERROR active_session");
   else if(line=="RADIO REBOOT") { Serial.println("RADIO_REBOOT ok=1"); delay(20); ESP.restart(); }
   else if(restartRequired_) Serial.println("RADIO_ERROR restart_required");

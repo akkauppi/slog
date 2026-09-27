@@ -213,3 +213,7 @@ published, cached by the page, or included in diagnostics.
 The MCU-only bench adds `BENCH TIMEOUT` to drop one send callback deliberately.
 This hook is compiled only with `SAUNA_RADIO_BENCH_TEST` in the separate bench
 project. It is absent from production firmware.
+
+## Cold standby extension
+
+SAUW V1 status bits 9 and 10 now announce cold standby and its test heartbeat profile. See [power management](power-management.md) for fixed intervals, sequence semantics, paired-update requirements and USB controls. Active recording cadence and SLOG V3 are unchanged.

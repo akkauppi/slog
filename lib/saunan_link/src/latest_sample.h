@@ -18,6 +18,7 @@ class LatestSample {
     if(now<offeredAt_ || now-offeredAt_>20000) { ++expired; return false; }
     memcpy(out,bytes_.data(),bytes_.size()); return true;
   }
+  bool hasPending() const { return pending_; }
   void clear() { pending_=false; }
   uint32_t replaced=0,expired=0;
  private:
