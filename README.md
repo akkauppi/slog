@@ -4,10 +4,17 @@
 
 SLOG is open source software for logging saunas. The reference logger is a
 power-loss-resilient Seeed Studio XIAO ESP32-C3 with eight powered DS18B20
-temperature sensors. Wi-Fi is disabled. Measurements are available over USB,
-while detected sauna sessions are stored in internal flash.
+temperature sensors. Radio stays off unless saved pairing enables the optional
+ESP-NOW display link; no Wi-Fi network is needed. Measurements are available
+over USB, while detected sauna sessions are stored in internal flash.
 
 ## Start here: use the browser portal
+
+The [28 September field/readiness audit](docs/field-readiness-2026-09-28.md)
+records a hardware-ready local setup and the remaining browser work. At that
+audit, the hosted flasher still offered older firmware, and browser recording
+health/standby messages did not yet reflect all current firmware states. Use
+the verified local recovery package for the accepted field setup.
 
 Open the hosted portal at **[akkauppi.github.io/slog](https://akkauppi.github.io/slog/)**.
 For normal use, this is the SLOG application. Installing Python, PlatformIO, or
@@ -144,9 +151,13 @@ documented in
 
 ## Session logging
 
-- Samples are taken every 10 seconds.
+- Active sampling runs every 10 seconds. Cold standby checks probes every
+  150 seconds and sends fresh temperatures every 15 minutes (5 minutes in the
+  testing profile). See [power management](docs/power-management.md).
 - No session can start without one complete, valid eight-probe configuration.
-- The latest 10 minutes are retained in RAM while idle.
+- Up to 10 minutes of active pretrigger samples are retained in RAM. Entering
+  cold standby clears that ring; cold checks do not populate it. Recording
+  after waking can therefore begin with a shorter pretrigger history.
 - A session starts after any valid probe remains above 40 C for 30 seconds.
 - The pre-trigger readings are committed immediately; later blocks are flushed
   every 10 minutes, limiting sudden-power-loss exposure to the current block.

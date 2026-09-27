@@ -6,6 +6,14 @@ store over USB, and **Analyze** reads raw `.slog` files without a server or
 upload. All runtime code and plotting are included in the offline application
 shell; there are no charting or storage service dependencies.
 
+## Recording-health status limitation
+
+As recorded in the [28 September audit](field-readiness-2026-09-28.md), Records
+does not yet parse `recording_ok` / `recording_fault`. A mounted filesystem and
+available reserve are not proof that recording writes are healthy. Keep raw
+download and CRC-validation workflows available while this status handling is
+updated; the actual field recording passed both Python and browser parsing.
+
 ## Analyze raw files
 
 Choose one or more `.slog` files in **Analyze**. The browser validates the

@@ -10,6 +10,14 @@ It does not accept arbitrary firmware, perform routine OTA updates, erase the
 whole flash, read or delete sauna logs, analyze data, or publish records. Those
 boundaries keep the first community-facing tool small enough to audit and test.
 
+## Current release status
+
+See the [28 September audit](field-readiness-2026-09-28.md): the verified local
+flasher matches the installed logger, while the hosted package was older at
+that check. Browser recording-health and sleeping-radio messages still need
+updates. CLI hardware installation was accepted; browser USB installation and
+recovery still need their own hardware acceptance.
+
 ## Requirements
 
 - a current desktop browser that exposes Web Serial; Chrome, Chromium, Edge,
