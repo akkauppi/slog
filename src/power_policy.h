@@ -19,19 +19,31 @@ class PowerPolicy {
     const bool wasStandby = standby_;
     if (!cold) wake(now);
     else if (now >= awakeUntil_) standby_ = true;
-    const bool send = !standby_ || !wasStandby || now >= nextHeartbeat_;
-    if (send) nextHeartbeat_ = now + heartbeatMs();
-    return send;
+    if (!standby_ || !wasStandby) {
+      nextHeartbeat_ = now + heartbeatMs();
+      return true;
+    }
+    const uint64_t dueThrough = now + kHeartbeatJitterMs;
+    if (dueThrough < nextHeartbeat_) return false;
+    // Keep the deadline on its original cadence: a late collection must not
+    // make the next on-time collection miss an entire 150-second cold check.
+    // Consume missed deadlines together and send only the current reading.
+    nextHeartbeat_ += ((dueThrough - nextHeartbeat_) / heartbeatMs() + 1) * heartbeatMs();
+    return true;
   }
   bool standby() const { return standby_; }
   bool test() const { return test_; }
   uint32_t sampleMs() const { return standby_ ? kColdCheckMs : kLiveMs; }
   uint32_t heartbeatMs() const { return test_ ? 300000 : 900000; }
   bool radioNeeded(uint64_t now) const {
-    // Start the transport before the conversion whose result is the heartbeat.
-    return !standby_ || now + 1000 >= nextHeartbeat_;
+    // Start before even the earliest accepted heartbeat's conversion. Driver
+    // startup runs on the radio worker while that conversion is in progress.
+    return !standby_ || now + 1000 + kHeartbeatJitterMs >= nextHeartbeat_;
   }
  private:
+  // Collection and conversion scheduling read the clock separately. Allow
+  // small timing jitter, never a whole cold-check interval, at the deadline.
+  static constexpr uint32_t kHeartbeatJitterMs = 100;
   bool standby_ = false, test_ = false;
   uint64_t awakeUntil_ = 0, nextHeartbeat_ = 0;
 };

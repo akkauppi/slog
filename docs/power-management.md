@@ -23,6 +23,11 @@ history breaks and labels the last reading's age. Standby expires after the
 advertised interval plus 25 seconds; after two intervals plus 60 seconds it is
 lost. Duplicates do not renew this deadline.
 
+Heartbeat deadlines stay anchored to the original schedule, with a 100 ms
+collection-jitter allowance. A slightly late heartbeat cannot postpone the next
+one by a whole cold-check interval. After a longer acquisition delay, only the
+current reading is sent; missed heartbeat deadlines do not create a burst.
+
 The ESP-NOW driver stops between cold heartbeats. Driver changes run on the
 existing radio worker; an in-flight send and its timeout handling finish before
 suspension. Pairing stays in NVS. Restart failures use bounded recovery rather
@@ -31,6 +36,13 @@ uses timer-triggered light sleep in at most one-second slices between cold
 checks. RAM and boot identity are retained and the watchdog remains enabled.
 USB serial activity keeps CPU sleep off for diagnostics; radio duty cycling and
 sparse checks still operate. No deep sleep or probe power switching is used.
+
+An observed recording start, block-write or finalization failure prevents cold
+standby and clears the live storage-ready flag. Mounting the filesystem cannot
+clear this per-boot failure latch; successful publication of a new recording's
+initial block can. `LOG STATUS` exposes `recording_ok` and `recording_fault`.
+The receiver can therefore warn about failed saving even while temperatures
+continue to arrive.
 
 USB commands:
 

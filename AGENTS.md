@@ -14,6 +14,9 @@ ESP32-C3 using PlatformIO with Arduino built as an ESP-IDF component.
   Wake fast sampling at 35 C or a probe fault. Start after any valid probe stays above 40 C for 30
   seconds. Automatic cooling completion requires probe 1 and at least six valid
   probes; otherwise the 12-hour cap or power loss ends the run.
+  After normal cooling, require P1 and at least six valid probes to report all
+  valid readings at or below 40 C before rearming. Include the saved pretrigger
+  and trigger readings in the session peak used for cooling completion.
 - Treat power removal at any instruction as normal. Never weaken CRC block
   validation, completed-block preservation, explicit interruption metadata, or
   the rule that only a completely erased session partition may be initialized

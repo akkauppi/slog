@@ -319,7 +319,7 @@ void collectSample(uint32_t now) {
   const uint32_t previousPeriod = powerPolicy.sampleMs();
   const bool send = powerPolicy.observe(reading.identity.monotonicMs,
       reading.validMask, reading.centiC, logger.active(),
-      activeProbeMappingReady && logger.filesystemReady() &&
+      activeProbeMappingReady && logger.recordingHealthy() &&
       !commissioningLocked && !probeConfigRestartRequired);
   if (previousPeriod != powerPolicy.sampleMs())
     nextConversionAt = now + powerPolicy.sampleMs() - kConversionTimeMs;
@@ -342,7 +342,7 @@ void collectSample(uint32_t now) {
     for (size_t i=0; i<sauna::kSensorCount; ++i) sample.centiC[i] = reading.centiC[i];
     sample.statusFlags = reading.statusFlags | sauna_wire::kMappingReady;
     if (logger.bootCounterValid()) sample.statusFlags |= sauna_wire::kBootCounterValid;
-    if (logger.filesystemReady()) sample.statusFlags |= sauna_wire::kStorageReady;
+    if (logger.recordingHealthy()) sample.statusFlags |= sauna_wire::kStorageReady;
     if (logger.active()) sample.statusFlags |= sauna_wire::kSessionActive;
     if (powerPolicy.standby()) {
       sample.statusFlags |= sauna_wire::kColdStandby;

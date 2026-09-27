@@ -434,6 +434,11 @@ bool SessionLogger::addSample(const SensorReading& reading, bool coldCheck) {
 }
 
 void SessionLogger::evaluateIdle(const SensorReading& reading) {
+  if (!normalCoolingRearm_.mayStart(reading.validMask, reading.centiC,
+                                   kStartCentiC)) {
+    startCandidate_ = false;
+    return;
+  }
   bool above = false;
   for (uint8_t index = 0; index < kSensorCount; ++index) {
     if ((reading.validMask & (1U << index)) &&
@@ -468,6 +473,7 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
   if (static_cast<uint32_t>(reading.capturedAtMs - aboveStartSinceMs_) >=
       kStartHoldMs) {
     if (!startSession(reading)) {
+      recordingHealth_.fail();
       Serial.println("logger_event=start_failed");
     }
     startCandidate_ = false;
@@ -560,7 +566,7 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
       {headerBytes, sizeof(headerBytes)}, {&block, sizeof(block)},
       {records, block.payloadBytes},
   };
-  const StoreError created = createSession(
+  const StoreError created = recordingHealth_.create(
       sessionStoreFiles(), storePath(nextId, true).c_str(),
       storePath(nextId).c_str(), chunks, 3);
   if (created != StoreError::None) {
@@ -582,7 +588,10 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
   totalRecords_ = ringCount_;
   pendingCount_ = 0;
   coolingCandidate_ = false;
-  sessionPeakCentiC_ = INT16_MIN;
+  // The initial durable block includes the trigger and pre-trigger readings.
+  // Include those in the peak even if the probe cools before the next sample.
+  sessionPeakCentiC_ = peakInRecordedWindow(ring_, oldest, ringCount_,
+                                           kPretriggerRecords);
 
   Serial.printf("logger_event=session_started id=%u pretrigger_records=%u\n",
                 currentSessionId_, ringCount_);
@@ -595,12 +604,7 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
 
 void SessionLogger::evaluateActive(const SensorReading& reading) {
   pending_[pendingCount_++] = reading;
-  int16_t hottest = INT16_MIN;
-  for (uint8_t index = 0; index < kSensorCount; ++index) {
-    if (reading.validMask & (1U << index)) {
-      hottest = max(hottest, reading.centiC[index]);
-    }
-  }
+  const int16_t hottest = hottestValidCentiC(reading.validMask, reading.centiC);
   if (hottest > sessionPeakCentiC_) sessionPeakCentiC_ = hottest;
 
   if (pendingCount_ == kRecordsPerBlock && !commitPending()) {
@@ -646,7 +650,7 @@ bool SessionLogger::appendBlock(const SensorReading* readings, uint16_t count) {
   const StoreChunk chunks[] = {
       {&block, sizeof(block)}, {records, block.payloadBytes},
   };
-  const StoreError result = appendSession(sessionStoreFiles(),
+  const StoreError result = recordingHealth_.append(sessionStoreFiles(),
       storePath(currentSessionId_).c_str(), chunks, 2);
   if (result != StoreError::None) {
     Serial.printf("logger_event=store_failed operation=block reason=%s\n",
@@ -679,7 +683,7 @@ bool SessionLogger::appendFooter(const void* footer, size_t size) {
   sauna_link::putLe(encoded+12, fields.finalRelativeSeconds, 4);
   sauna_link::putLe(encoded+16, crc32(encoded,16), 4);
   const StoreChunk chunk{encoded, sizeof(encoded)};
-  const StoreError result = appendSession(sessionStoreFiles(),
+  const StoreError result = recordingHealth_.append(sessionStoreFiles(),
       storePath(currentSessionId_).c_str(), &chunk, 1);
   if (result != StoreError::None) {
     Serial.printf("logger_event=store_failed operation=footer reason=%s\n",
@@ -711,6 +715,10 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds,
                 currentSessionId_, static_cast<unsigned>(reason), totalRecords_);
   active_ = false;
   currentSessionId_ = 0;
+  if (reason == FinishReason::NormalCooling) {
+    normalCoolingRearm_.requireCold();
+    startCandidate_ = false;
+  }
   if (reason == FinishReason::MaxDuration) {
     continuationOf_ = finishedId;
     continuationKind_ = ContinuationKind::MaxDurationSampleAnchored;
@@ -722,6 +730,7 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds,
 
 void SessionLogger::interruptActiveSession(const char* reason) {
   if (!active_) return;
+  recordingHealth_.fail();
   const uint32_t interruptedId = currentSessionId_;
   Serial.printf("logger_event=session_interrupted id=%u reason=%s\n",
                 interruptedId, reason ? reason : "unknown");
@@ -1544,7 +1553,8 @@ void SessionLogger::printStatus() {
                 "config_generation=%u active_generation=%u geometry=%s "
                 "discovered=%u mapped_valid=%u commissioning=%u "
                 "restart_required=%u valid_slots=%u storage_state=%s "
-                "storage_init=%s format_capability=2\n",
+                "storage_init=%s recording_ok=%u recording_fault=%u "
+                "format_capability=2\n",
                 filesystemReady_, active_, currentSessionId_,
                 filesystemReady_ ? LittleFS.totalBytes() : 0,
                 filesystemReady_ ? LittleFS.usedBytes() : 0,
@@ -1568,7 +1578,7 @@ void SessionLogger::printStatus() {
                 probeMappingReady_ ? "column8_20cm_v1" : "none",
                 discoveredProbes_, mappedValidProbes_, commissioningMode_,
                 probeConfigRestartRequired_, probeConfigValidSlots_, storageState,
-                storageInit);
+                storageInit, recordingHealthy(), recordingHealth_.failed());
 }
 
 void SessionLogger::listSessions() {

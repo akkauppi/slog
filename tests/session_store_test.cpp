@@ -1,4 +1,5 @@
 #include "session_store.h"
+#include "recording_health.h"
 
 #include <algorithm>
 #include <cassert>
@@ -138,6 +139,53 @@ void collisionAndShortWrites() {
   assert(fs.disk["/sessions/next"] == complete + complete);
   assert(createSession(fs, "/staging/invalid", "/sessions/invalid", nullptr, 0) == StoreError::InvalidChunks);
 }
+
+void persistenceFailuresLatchRecordingReadiness() {
+  const char* failures[] = {"open", "write", "zero_write", "sync", "close",
+                            "rename"};
+  for (const char* failure : failures) {
+    MemoryFiles fs;
+    RecordingHealth health;
+    assert(health.ready(true));
+    assert(!health.ready(false));
+    fs.fail = failure;
+    assert(health.create(fs, "/staging/failed", "/sessions/failed", chunks, 3)
+           != StoreError::None);
+    assert(health.failed() && !health.ready(true));
+    assert(fs.disk["/sessions/old"] == "old committed data");
+
+    // A remount or unrelated successful write is not evidence that a new
+    // recording has successfully recovered from the observed failure.
+    assert(!health.ready(false));
+    fs.fail.clear();
+    assert(health.append(fs, "/sessions/old", chunks, 3) == StoreError::None);
+    assert(!health.ready(true));
+    assert(health.create(fs, "/staging/recovered", "/sessions/recovered",
+                         chunks, 3) == StoreError::None);
+    assert(health.ready(true) && !health.failed());
+    assert(fs.disk["/sessions/recovered"] == complete);
+
+    // Data blocks and footers both use this exact append boundary. Even a
+    // close failure following a successful sync must remain a visible fault.
+    fs.fail = std::string(failure) == "rename" ? "sync" : failure;
+    assert(health.append(fs, "/sessions/recovered", chunks, 3)
+           != StoreError::None);
+    assert(!health.ready(true));
+    assert(fs.disk["/sessions/recovered"].find(complete) == 0);
+  }
+
+  MemoryFiles fs;
+  RecordingHealth health;
+  // Reserve/catalog/encoding failures occur before the store is called.
+  health.fail();
+  assert(!health.ready(true));
+  assert(health.create(fs, "/staging/new", "/sessions/new", chunks, 3)
+         == StoreError::None);
+  assert(health.ready(true));
+  assert(health.create(fs, "/staging/collision", "/sessions/new", chunks, 3)
+         == StoreError::AlreadyExists);
+  assert(!health.ready(true));
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -145,6 +193,7 @@ int main(int argc, char** argv) {
   failuresAreNotAcknowledged();
   cutsPreserveTheCommittedAppendPrefix();
   collisionAndShortWrites();
+  persistenceFailuresLatchRecordingReadiness();
   // Exercise the production POSIX adapter as well as fault-injected storage.
   assert(argc == 2);
   const std::string staging = std::string(argv[1]) + "/pending.slog";

@@ -6,6 +6,8 @@
 #include "probe_config.h"
 #include "sample_identity.h"
 #include "retention_policy.h"
+#include "recording_health.h"
+#include "session_temperature.h"
 
 namespace sauna {
 
@@ -65,6 +67,9 @@ class SessionLogger {
   void setProbeBusStatus(uint8_t discovered, uint8_t mappedValid);
   void setCommissioningMode(bool enabled);
   bool filesystemReady() const { return filesystemReady_; }
+  bool recordingHealthy() const {
+    return recordingHealth_.ready(filesystemReady_);
+  }
   bool active() const { return active_; }
 
  private:
@@ -120,6 +125,8 @@ class SessionLogger {
   StorageState storageState_ = StorageState::Unavailable;
   uint8_t storageInitialization_ = 0;
   bool active_ = false;
+  RecordingHealth recordingHealth_{};
+  NormalCoolingRearm normalCoolingRearm_{};
   bool hotContinuationEligible_ = true;
   bool interruptedSessionWasHot_ = false;
   bool haveLatestReading_ = false;
