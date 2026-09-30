@@ -27,12 +27,18 @@ setup, record download, charts, or CSV/Excel export.
 | Verify the logger and map eight probes | Portal · **Prepare** | No |
 | Download, preserve, or remove records | Portal · **Records** | No |
 | View charts and export CSV or Excel | Portal · **Analyze** | No |
+| Optional receiver for live temperatures; pairing and power controls | Portal · **Radio (optional)** | No |
 | Develop firmware, retrieve crash dumps, or make batch reports | Command-line tools | Yes |
 
 Blank session storage is initialized automatically when it is provably erased.
 If a board carries factory-test data and its session partition cannot mount,
 the portal offers a guarded **new or intentionally erased board** recovery
 path. Existing loggers are never formatted automatically.
+
+Radio is optional and is needed only for a separate receiver showing real-time
+temperatures. Recording, USB downloads and analysis work without pairing.
+The **Radio (optional)** tab shares the portal connection: disconnect before
+choosing the other board. Save one private recovery kit and use it for both.
 
 ### Browser workflow
 
@@ -61,6 +67,11 @@ offline after its application files and firmware package have been cached.
 GitHub Pages rebuilds the portal and its commit-identified firmware package
 from `main`; local development must use `tools/serve_portal.py` as described in
 [`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md).
+
+The portal also includes a [preheated electric-sauna example](portal/examples/preheated-electric-sauna/README.md)
+under **Analyze → Try a real sauna recording**. The sauna was already fully
+heated; useful observations start around 15 minutes. All raw readings and
+unknown-duration power gaps are preserved.
 
 ## Project scope and example
 

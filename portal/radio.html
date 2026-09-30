@@ -1,16 +1,5 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
-<title>SLOG · Radio pairing</title><link rel="stylesheet" href="./radio.css"><script type="module" src="./js/radio-ui.js"></script></head>
-<body><header><a href="./index.html">SLOG · Back to portal</a><h1>Radio pairing</h1><p>Prepare a logger and receiver for an encrypted local connection. No internet or router is needed once paired.</p></header>
-<main><section><h2>1. Identify the boards</h2><p>Close other serial monitors. Connect each board in turn to read its identity. Connecting does not change pairing.</p>
-<div class="actions"><button id="connect">Connect a board</button><button id="disconnect">Disconnect</button><button id="refresh">Refresh status</button></div>
-<pre id="status" aria-label="Connected board status">No board connected.</pre></section>
-<section><h2>2. Prepare or restore pairing</h2><label>Logger MAC <input id="logger" placeholder="02:00:00:00:00:01" maxlength="17"></label><label>Receiver MAC <input id="receiver" placeholder="02:00:00:00:00:02" maxlength="17"></label>
-<label>Radio channel <input id="channel" type="number" min="1" max="11" value="6"></label><button id="prepare">Prepare new pairing</button>
-<p>Preparing again creates new keys. Use the same recovery kit for both boards.</p><label>Restore existing kit <input id="import" type="file" accept=".json,application/json"></label>
-<button id="export">Save private recovery kit</button><label><input id="saved" type="checkbox"> I have saved the recovery kit for offline use.</label></section>
-<section><h2>3. Apply and verify</h2><p id="pairing-summary">No pairing kit prepared.</p><p>Stop recording before changing pairing. The connected board must match the kit’s identity and role. Apply to each board, reboot it, and reconnect to verify status. Pairing is complete when the receiver shows live readings.</p>
-<div class="actions"><button id="apply">Apply pairing to connected board</button><button id="reboot">Reboot connected board</button></div></section>
-<section><h2>Recover the radio</h2><p>Restart only the connected board’s radio. This keeps the logger running and preserves its recording session.</p><button id="recover">Recover radio without reboot</button></section>
-<p id="message" role="status" aria-live="polite">Connect a board to begin. Use current radio firmware on both boards.</p></main></body></html>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'self'">
+<meta http-equiv="refresh" content="0; url=./index.html#radio"><title>SLOG · Radio</title><link rel="stylesheet" href="./styles.css"></head>
+<body><main class="page"><h1>Radio setup is part of the portal</h1><p><a href="./index.html#radio">Open Radio in SLOG</a> to pair boards, check reception and manage power.</p></main></body></html>

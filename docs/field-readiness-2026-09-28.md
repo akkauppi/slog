@@ -73,6 +73,11 @@ heat detection and the shorter pretrigger window after standby.
 
 ## Browser/tool follow-ups before calling the release current
 
+Historical list from 28 September. The October Pages release implements items
+1–4, integrates optional radio setup in the main portal, and includes the raw
+preheated electric-sauna example. Item 5 remains a physical hardware acceptance
+gate; software release checks alone do not satisfy it.
+
 1. Parse and show `recording_ok` and `recording_fault` in Records. The current
    parser ignores both fields, so a mounted filesystem and available reserve can
    appear healthy after a recording failure. Retain raw-file download access.

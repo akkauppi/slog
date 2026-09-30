@@ -12,6 +12,7 @@ const ANSI_SEQUENCE =
  */
 export function sanitizeDiagnosticText(value) {
   const cleaned = String(value ?? "")
+    .replace(/\bRADIO\s+[0-9a-fA-F]{120}\b/g, "RADIO [private pairing configuration redacted]")
     .replace(ANSI_SEQUENCE, "")
     .replace(/\r\n?|\n/g, " ↩ ")
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, "�")

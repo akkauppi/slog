@@ -109,11 +109,16 @@ test("the portal has no third-party runtime assets", async () => {
   assert.match(html, /probe ROM addresses[\s\S]*?Review it before sharing/i);
   assert.doesNotMatch(html, /<textarea\b/i);
   const inputs = [...html.matchAll(/<input\b[^>]*>/gi)].map((match) => match[0]);
-  assert.equal(inputs.length, 2, "the offline picker and guarded storage confirmation are exposed");
+  const radioInputs = inputs.filter(input => /id="radio-/.test(input));
+  assert.equal(radioInputs.length, 5, "radio setup exposes two addresses, channel, recovery file and saved-kit confirmation");
+  const mainInputs = inputs.filter(input => !/id="radio-/.test(input));
+  assert.equal(mainInputs.length, 2, "the offline picker and guarded storage confirmation are exposed");
   assert.match(inputs[0], /id=["']analysis-files["']/i);
   assert.match(inputs[0], /type=["']file["']/i);
   assert.match(inputs[0], /multiple/i);
-  assert.match(inputs[1], /id=["']format-storage-confirmation["']/i);
+  assert.match(mainInputs[1], /id=["']format-storage-confirmation["']/i);
+  assert.match(html, /data-portal-view="radio"/);
+  assert.doesNotMatch(html, /href="\.\/radio\.html"/);
   assert.match(html, /data-portal-view="prepare"/);
   assert.match(html, /data-portal-view="records"/);
   assert.match(html, /data-portal-view="analyze"/);

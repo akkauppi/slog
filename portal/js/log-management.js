@@ -296,6 +296,10 @@ export function parseLogStatus(value) {
     storageState,
     storageInit,
     formatCapability,
+    recordingOk: Object.hasOwn(message.fields, "recording_ok")
+      ? booleanField(message, "recording_ok") : null,
+    recordingFault: Object.hasOwn(message.fields, "recording_fault")
+      ? booleanField(message, "recording_fault") : null,
     validSensors: unsigned(message, "sensors"),
     retention: {
       policy: retentionPolicy,

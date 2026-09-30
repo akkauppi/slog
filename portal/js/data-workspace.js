@@ -19,7 +19,7 @@ import {
 } from "./session-export.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const VIEW_NAMES = Object.freeze(["prepare", "records", "analyze"]);
+const VIEW_NAMES = Object.freeze(["prepare", "radio", "records", "analyze"]);
 const FORMAT_CONFIRMATION = "ERASE SLOG STORAGE";
 
 function requiredElement(document, id) {
@@ -331,6 +331,7 @@ export class DataWorkspace {
     this.recordsCount = requiredElement(document, "records-count");
     this.recordsCatalog = requiredElement(document, "records-catalog");
     this.fileInput = requiredElement(document, "analysis-files");
+    this.exampleButton = requiredElement(document, "analysis-example");
     this.analysisMessage = requiredElement(document, "analysis-message");
     this.analysisIssues = requiredElement(document, "analysis-group-issues");
     this.analysisOutput = requiredElement(document, "analysis-output");
@@ -373,6 +374,7 @@ export class DataWorkspace {
       void this.requestFormatChallenge();
     });
     this.fileInput.addEventListener("change", () => void this.openFiles(this.fileInput.files));
+    this.exampleButton.addEventListener("click", () => void this.openExample());
     this.runSelect.addEventListener("change", () => {
       this.selectedRun = Number(this.runSelect.value);
       this.renderAnalysis();
@@ -513,7 +515,11 @@ export class DataWorkspace {
     this.chains = groupCatalogSessions(catalog);
     this.renderStorage();
     this.renderCatalog();
-    if (status.active) {
+    if (status.recordingFault === true || status.recordingOk === false) {
+      setStatus(this.recordsMessage,
+        "The logger reports a recording failure or unavailable recording storage. Preserve existing raw files before troubleshooting; free space alone does not mean recording is healthy.",
+        "error");
+    } else if (status.active) {
       setStatus(
         this.recordsMessage,
         `Session ${status.activeSessionId} is recording. You can view the file list, but downloads and removal stay disabled until recording ends.`,
@@ -538,6 +544,13 @@ export class DataWorkspace {
     this.recordsActive.textContent = status.active
       ? `Session ${status.activeSessionId} active`
       : "Idle";
+    if (status.recordingFault === true || status.recordingOk === false) {
+      this.recordsActive.textContent += " · saving unavailable";
+    } else if (status.recordingOk === null || status.recordingOk === undefined) {
+      this.recordsActive.textContent += " · recording health not reported";
+    } else {
+      this.recordsActive.textContent += " · saving healthy";
+    }
     this.recordsStorage.textContent = status.filesystemReady
       ? `${formatBytes(status.freeBytes)} free of ${formatBytes(status.totalBytes)}`
       : "Filesystem unavailable";
@@ -1096,6 +1109,25 @@ export class DataWorkspace {
     }
   }
 
+  async openExample() {
+    if (this.exampleButton.disabled) return;
+    this.exampleButton.disabled = true;
+    try {
+      const files = await Promise.all([5, 6, 7].map(async id => {
+        const name = `session-${id}.slog`;
+        const response = await this.window.fetch(`./examples/preheated-electric-sauna/${name}`);
+        if (!response.ok) throw new Error(`Example download failed (${response.status}).`);
+        const bytes = await response.arrayBuffer();
+        return { name, size: bytes.byteLength, arrayBuffer: async () => bytes };
+      }));
+      await this.openFiles(files);
+    } catch (error) {
+      setStatus(this.analysisMessage, friendlyError(error), "error");
+    } finally {
+      this.exampleButton.disabled = false;
+    }
+  }
+
   async openFiles(fileList) {
     const files = [...(fileList ?? [])];
     if (files.length === 0) return;
@@ -1267,7 +1299,7 @@ export class DataWorkspace {
     }
 
     this.finishAnalysisLoad(
-      `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"}: ${grouped.runs.length} complete run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} ungrouped segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
+      `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"}: ${grouped.runs.length} grouped run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} ungrouped segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
     );
   }
 

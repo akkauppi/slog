@@ -231,7 +231,8 @@ test("silent SYS INFO is retried once while disconnect is never retried", async 
   await silentTransport.open();
   await assert.rejects(
     new CommissioningProtocolClient(silentTransport, { timeoutMs: 15 }).info(),
-    ProtocolTimeoutError,
+    error => error instanceof ProtocolTimeoutError &&
+      /cold standby/.test(error.message) && /Do not restart an active recording/.test(error.message),
   );
   assert.deepEqual(silentPort.commands, ["SYS INFO", "SYS INFO"]);
   await silentTransport.close();

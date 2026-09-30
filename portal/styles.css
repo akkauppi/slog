@@ -1702,3 +1702,15 @@ dialog h2 {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Radio setup shares the portal's typography, sections and controls. */
+.radio-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; }
+.radio-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.radio-fields label, .radio-field { display: grid; gap: .45rem; margin: 1rem 0; font-weight: 650; }
+.radio-fields input, .radio-field input { min-width: 0; width: 100%; padding: .7rem; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.radio-field { max-width: 9rem; }
+.radio-check { display: flex; align-items: baseline; gap: .6rem; margin: 1.5rem 0; }
+.radio-details { margin: 1.5rem 0; }
+.radio-details summary { cursor: pointer; font-weight: 650; }
+.radio-details pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: var(--surface); }
+@media (max-width: 760px) { .radio-grid, .radio-fields { grid-template-columns: 1fr; } }

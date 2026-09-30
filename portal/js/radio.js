@@ -47,7 +47,11 @@ export async function radioRequest(transport,command,prefix) {
       const record=await transport.readRecord(deadline-Date.now());
       if(record.error) throw new Error('Malformed serial response.');
       const [name,...parts]=record.line.trim().split(/\s+/);
-      if(name==='RADIO_ERROR') throw new Error('Device rejected the operation: '+parts.join(' '));
+      if(['RADIO_ERROR','POWER_ERROR','LOG_ERROR','RECEIVER_ERROR'].includes(name)) {
+        const error=new Error('Device rejected the operation: '+parts.join(' '));
+        error.code=parts[0];
+        throw error;
+      }
       if(name!==prefix) continue;
       const fields={};
       for(const part of parts) { const match=/^([a-z_]+)=([^\s=]+)$/.exec(part);if(!match||Object.hasOwn(fields,match[1])) throw new Error('Invalid radio response.');fields[match[1]]=match[2]; }
@@ -55,6 +59,31 @@ export async function radioRequest(transport,command,prefix) {
     }
     throw new Error('No response. Configuration outcome may be uncertain; reconnect and inspect status.');
   });
+}
+
+export async function powerStatus(transport) {
+  const fields=await radioRequest(transport,'POWER STATUS','POWER_STATUS');
+  if(!['normal','test'].includes(fields.mode)||!['awake','standby'].includes(fields.state)||
+    !/^\d+$/.test(fields.sample_ms)||!/^\d+$/.test(fields.heartbeat_ms)||
+    Number(fields.sample_ms)<=0||Number(fields.heartbeat_ms)<=0) throw new Error('Invalid power status.');
+  return fields;
+}
+
+export async function configurePower(transport,action) {
+  if(!['WAKE','NORMAL','TEST'].includes(action)) throw new Error('Unknown power action.');
+  const result=await radioRequest(transport,`POWER ${action}`,'POWER_CONFIG');
+  if(result.ok!=='1'||(action==='WAKE' ? result.persistent!=='0'||result.window_s!=='300' : result.mode!==action.toLowerCase())) {
+    throw new Error('Power change was not verified. Refresh status before retrying.');
+  }
+  return result;
+}
+
+export async function recoverRadio(transport) {
+  const status=await radioRequest(transport,'RADIO STATUS','RADIO_STATUS');
+  if(status.sleeping==='1') throw new Error('The radio is intentionally sleeping between cold-standby heartbeats. Use Wake for five minutes to test reception; pairing is unchanged.');
+  const result=await radioRequest(transport,'RADIO RECOVER','RADIO_RECOVER');
+  if(result.ok!=='1') throw new Error('Radio recovery is unavailable. Refresh status and check whether the radio is sleeping, recovering, or awaiting a reboot.');
+  return result;
 }
 export async function applyPairing(transport,document) {
   const config=validatePairing(document);

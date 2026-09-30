@@ -19,3 +19,5 @@ crash*.bin
 
 /radio-pairing/
 !/tests/fixtures/*.slog
+
+!/portal/examples/**/*.slog

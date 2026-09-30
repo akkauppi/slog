@@ -92,6 +92,17 @@ function sessionLine(id, overrides = {}) {
     .join(" ")}`;
 }
 
+test('recording health is independent of mounted storage and absent on legacy firmware',()=>{
+ const legacy=parseLogStatus(statusLine());
+ assert.equal(legacy.recordingOk,null);
+ assert.equal(legacy.recordingFault,null);
+ const failed=parseLogStatus(statusLine({recording_ok:0,recording_fault:1}));
+ assert.equal(failed.filesystemReady,true);
+ assert.equal(failed.recordingOk,false);
+ assert.equal(failed.recordingFault,true);
+ assert.throws(()=>parseLogStatus(statusLine({recording_ok:2})),ProtocolError);
+});
+
 function framed(...lines) {
   return `${lines.flat().join("\r\n")}\r\n`;
 }
