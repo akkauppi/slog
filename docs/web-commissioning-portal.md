@@ -38,6 +38,20 @@ embedded frames, and a page opened directly with a `file:` URL cannot use the
 USB workflows. The Python commissioning tool remains available for
 command-line use and for the deferred warm-one-at-a-time method.
 
+Pop!_OS/Linux is supported by the browser APIs, but a sufficient version does
+not guarantee that the API is enabled. The portal checks `navigator.serial`,
+before talking to the logger. A missing API is not a firmware or USB-permission
+failure. In Firefox, inspect `about:policies`: any active enterprise policy
+(including a distribution's `DisableAppUpdate`) disables Web Serial unless
+`DefaultSerialGuardSetting` is explicitly `3`. Preserve existing policy entries
+when making that administrator change, then restart Firefox. See
+[Mozilla's policy reference](https://firefox-admin-docs.mozilla.org/reference/policies/defaultserialguardsetting/).
+Firefox may also prompt to install its site-permission add-on when choosing a
+port. In Brave, check `brave://flags/#brave-web-serial-api` for a disabled
+override; [Brave enabled the API by default in 1.69](https://github.com/brave/brave-browser/issues/38791).
+Device permissions or sandboxed browser packaging become relevant after the
+API is exposed and a port can be requested.
+
 ## Firmware installation
 
 Installation is intentionally not one opaque button. The page asks the user to

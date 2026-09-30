@@ -22,6 +22,7 @@ import {
   requestSerialPort,
   serialPortOpenErrorMessage,
   webSerialSupported,
+  WEB_SERIAL_UNAVAILABLE_MESSAGE,
 } from "./serial-transport.js";
 import { FlashInstallationUi } from "./flash-ui.js";
 import { DiagnosticConsole, DiagnosticTranscript } from "./diagnostics.js";
@@ -609,8 +610,7 @@ function explainEnvironment() {
     environmentMessage.textContent =
       "USB connection needs the HTTPS portal or a localhost server; it cannot run from a file opened directly.";
   } else if (!webSerialSupported()) {
-    environmentMessage.textContent =
-      "USB connection is not available in this browser. Use a current desktop browser that exposes Web Serial, such as Chrome, Chromium, Edge, Brave, or Firefox 151 and newer.";
+    environmentMessage.textContent = WEB_SERIAL_UNAVAILABLE_MESSAGE;
   } else {
     environmentMessage.textContent =
       "USB setup must run as a top-level page, not inside an embedded frame.";
@@ -685,7 +685,9 @@ async function connectRecordsLogger() {
 }
 
 async function connectRadioBoard() {
-  if (!portalEnvironmentSupported()) throw new Error("USB radio setup needs a secure top-level page in a desktop browser with Web Serial.");
+  if (!portalEnvironmentSupported()) throw new Error(webSerialSupported()
+    ? "USB radio setup needs a secure top-level page in a desktop browser with Web Serial."
+    : WEB_SERIAL_UNAVAILABLE_MESSAGE);
   if (!transport?.isOpen) {
     try {
       await attachPort(await requestSerialPort());

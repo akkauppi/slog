@@ -17,6 +17,7 @@ import {
   runExportFilename,
   serializeRunCsv,
 } from "./session-export.js";
+import { webSerialSupported, WEB_SERIAL_UNAVAILABLE_MESSAGE } from "./serial-transport.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const VIEW_NAMES = Object.freeze(["prepare", "radio", "records", "analyze"]);
@@ -434,7 +435,9 @@ export class DataWorkspace {
     if (name === "records" && !this.environmentSupported()) {
       setStatus(
         this.recordsMessage,
-        "USB record management needs a secure top-level page in a desktop browser with Web Serial. Offline file analysis remains available.",
+        webSerialSupported()
+          ? "USB record management needs a secure top-level page in a desktop browser with Web Serial. Offline file analysis remains available."
+          : WEB_SERIAL_UNAVAILABLE_MESSAGE,
         "error",
       );
     }

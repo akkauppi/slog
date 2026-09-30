@@ -172,12 +172,15 @@ export function webSerialSupported(serial = globalThis.navigator?.serial) {
   return Boolean(serial && typeof serial.requestPort === "function");
 }
 
+export const WEB_SERIAL_UNAVAILABLE_MESSAGE =
+  "This browser is not exposing Web Serial. It may be disabled by a browser setting or policy, even in a supported version. In Firefox 151+, check about:policies: an active policy can disable Web Serial unless DefaultSerialGuardSetting is 3. In Brave, check brave://flags/#brave-web-serial-api. Reopen the HTTPS portal after changing settings and restarting the browser. Offline file analysis still works.";
+
 export async function requestSerialPort(
   options = {},
   serial = globalThis.navigator?.serial,
 ) {
   if (!webSerialSupported(serial)) {
-    throw new SerialTransportError("Web Serial is not supported by this browser");
+    throw new SerialTransportError(WEB_SERIAL_UNAVAILABLE_MESSAGE);
   }
   return serial.requestPort(options);
 }
