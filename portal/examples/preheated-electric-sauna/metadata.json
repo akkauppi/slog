@@ -1,0 +1,30 @@
+{
+  "title": "Preheated electric sauna",
+  "archived_on": "2026-10-01",
+  "recording_date": null,
+  "heating": "electric",
+  "initial_condition": "Sauna fully heated before the recording began",
+  "interpretation": "Owner identifies useful observations from approximately 15 minutes onward; raw readings are not trimmed or retimed.",
+  "useful_from_approx_minutes": 15,
+  "time_caveat": "Elapsed time excludes unknown-duration power gaps between segments. The 15-minute note is approximate, not an absolute wall-clock timestamp.",
+  "segments": [
+    {
+      "file": "session-5.slog",
+      "session_id": 5,
+      "sha256": "5d2891f3182d2844ef3cc6b1ce4fd3362492c930251137a2eeaae176edab7433",
+      "bytes": 876
+    },
+    {
+      "file": "session-6.slog",
+      "session_id": 6,
+      "sha256": "c4b12994a0b0c9b0ef6ed4a331035ee281b8b170f9a21d7f3eb3d5138d36731c",
+      "bytes": 384
+    },
+    {
+      "file": "session-7.slog",
+      "session_id": 7,
+      "sha256": "fd27bc45dfba12783d34e68934e0f98ef296f8ca19b79582070578d669c05051",
+      "bytes": 15240
+    }
+  ]
+}

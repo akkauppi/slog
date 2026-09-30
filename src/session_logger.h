@@ -4,7 +4,10 @@
 #include <FS.h>
 
 #include "probe_config.h"
+#include "sample_identity.h"
 #include "retention_policy.h"
+#include "recording_health.h"
+#include "session_temperature.h"
 
 namespace sauna {
 
@@ -15,6 +18,7 @@ constexpr uint16_t kPretriggerRecords = 60;
 
 struct SensorReading {
   uint32_t capturedAtMs;
+  sauna_link::AcquisitionIdentity identity;
   int16_t centiC[kSensorCount];
   uint8_t validMask;
   int16_t chipCentiC;
@@ -50,7 +54,12 @@ class SessionLogger {
   using ExtraCommandHandler = bool (*)(const String& command);
 
   bool begin();
-  void addSample(const SensorReading& reading);
+  bool addSample(const SensorReading& reading, bool coldCheck = false);
+  void clearIdleWindow() { if (!active_) { ringHead_ = ringCount_ = 0; startCandidate_ = false; } }
+  void setBootIdentity(uint64_t source, uint64_t nonce) { sourceId_ = source; bootNonce_ = nonce; }
+  uint32_t bootId() const { return bootId_; }
+  bool bootCounterValid() const { return bootCounterValid_; }
+  uint32_t sessionId() const { return active_ ? currentSessionId_ : 0; }
   void handleSerial(ExtraCommandHandler extraHandler = nullptr);
   bool setProbeConfiguration(const ProbeMapping* mapping);
   void setProbeConfigStatus(ProbeConfigState state, uint32_t generation,
@@ -58,10 +67,13 @@ class SessionLogger {
   void setProbeBusStatus(uint8_t discovered, uint8_t mappedValid);
   void setCommissioningMode(bool enabled);
   bool filesystemReady() const { return filesystemReady_; }
+  bool recordingHealthy() const {
+    return recordingHealth_.ready(filesystemReady_);
+  }
   bool active() const { return active_; }
 
  private:
-  static constexpr uint32_t kSessionReserveBytes = 128 * 1024;
+  static constexpr uint32_t kSessionReserveBytes = 256 * 1024;
   static constexpr uint32_t kBlockWriteReserveBytes = 8 * 1024;
   static constexpr int16_t kStartCentiC = 4000;
   static constexpr int16_t kEndCentiC = 4500;
@@ -70,6 +82,13 @@ class SessionLogger {
   static constexpr uint32_t kEndHoldMs = 30UL * 60UL * 1000UL;
   static constexpr uint32_t kMaxSessionMs = 12UL * 60UL * 60UL * 1000UL;
   static constexpr uint32_t kFilesystemRetryMs = 60UL * 1000UL;
+  static constexpr uint32_t kFormatChallengeLifetimeMs = 60UL * 1000UL;
+
+  enum class StorageState : uint8_t {
+    Ready = 0,
+    Blank = 1,
+    Unavailable = 2,
+  };
 
   enum class RetentionRefusal : uint8_t {
     None = 0,
@@ -93,6 +112,8 @@ class SessionLogger {
   uint32_t continuationOf_ = 0;
   uint32_t interruptedSessionId_ = 0;
   uint32_t bootId_ = 0;
+  bool bootCounterValid_ = false;
+  uint64_t sourceId_ = 0, bootNonce_ = 0;
   uint32_t triggerAtMs_ = 0;
   uint32_t aboveStartSinceMs_ = 0;
   uint32_t continuationAnchorAtMs_ = 0;
@@ -101,7 +122,11 @@ class SessionLogger {
   bool startCandidate_ = false;
   bool coolingCandidate_ = false;
   bool filesystemReady_ = false;
+  StorageState storageState_ = StorageState::Unavailable;
+  uint8_t storageInitialization_ = 0;
   bool active_ = false;
+  RecordingHealth recordingHealth_{};
+  NormalCoolingRearm normalCoolingRearm_{};
   bool hotContinuationEligible_ = true;
   bool interruptedSessionWasHot_ = false;
   bool haveLatestReading_ = false;
@@ -127,6 +152,8 @@ class SessionLogger {
   bool commissioningMode_ = false;
   bool probeConfigRestartRequired_ = false;
   bool serialLineOverflow_ = false;
+  uint32_t formatChallenge_ = 0;
+  uint32_t formatChallengeExpiresAt_ = 0;
   RetentionRefusal retentionRefusal_ = RetentionRefusal::None;
   ContinuationKind continuationKind_ = ContinuationKind::None;
   SensorReading latestReading_{};
@@ -143,6 +170,8 @@ class SessionLogger {
   bool appendBlock(const SensorReading* readings, uint16_t count);
   bool appendFooter(const void* footer, size_t size);
   bool mountFilesystem();
+  bool partitionIsErased();
+  bool formatFilesystem();
   void retryFilesystem(uint32_t now);
   void findInterruptedSession();
   bool sessionEndsHot(File& file);
@@ -177,6 +206,8 @@ class SessionLogger {
   void resetIdleSamplingState();
   bool sessionLayoutMatches(const uint8_t* headerBytes, uint16_t version) const;
   bool processCommand(const String& command);
+  void printFormatChallenge();
+  bool confirmFormat(const String& command);
 };
 
 uint32_t crc32(const uint8_t* data, size_t length, uint32_t initial = 0);

@@ -1,0 +1,8 @@
+{
+  "name": "saunan-wire",
+  "version": "0.1.0",
+  "description": "Transport-independent live sample wire codec for saunan",
+  "keywords": ["sauna", "telemetry", "codec"],
+  "frameworks": "*",
+  "platforms": "*"
+}

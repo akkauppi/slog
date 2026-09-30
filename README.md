@@ -4,10 +4,17 @@
 
 SLOG is open source software for logging saunas. The reference logger is a
 power-loss-resilient Seeed Studio XIAO ESP32-C3 with eight powered DS18B20
-temperature sensors. Wi-Fi is disabled. Measurements are available over USB,
-while detected sauna sessions are stored in internal flash.
+temperature sensors. Radio stays off unless saved pairing enables the optional
+ESP-NOW display link; no Wi-Fi network is needed. Measurements are available
+over USB, while detected sauna sessions are stored in internal flash.
 
 ## Start here: use the browser portal
+
+The [28 September field/readiness audit](docs/field-readiness-2026-09-28.md)
+records a hardware-ready local setup and the remaining browser work. At that
+audit, the hosted flasher still offered older firmware, and browser recording
+health/standby messages did not yet reflect all current firmware states. Use
+the verified local recovery package for the accepted field setup.
 
 Open the hosted portal at **[akkauppi.github.io/slog](https://akkauppi.github.io/slog/)**.
 For normal use, this is the SLOG application. Installing Python, PlatformIO, or
@@ -20,15 +27,18 @@ setup, record download, charts, or CSV/Excel export.
 | Verify the logger and map eight probes | Portal · **Prepare** | No |
 | Download, preserve, or remove records | Portal · **Records** | No |
 | View charts and export CSV or Excel | Portal · **Analyze** | No |
-| Initialize blank session storage once | Serial command or supplied Python helper | Only when using the helper |
+| Optional receiver for live temperatures; pairing and power controls | Portal · **Radio (optional)** | No |
 | Develop firmware, retrieve crash dumps, or make batch reports | Command-line tools | Yes |
 
-The one current exception is explicit storage initialization. The portal never
-formats flash, so a factory-new or erased logger needs the one-time
-`LOG FORMAT YES` serial command before it can record sessions. This is
-explained under [First-use storage initialization](#first-use-storage-initialization).
-Python is one convenient way to send that command; it is not part of installing
-firmware, mapping probes, or processing downloaded data.
+Blank session storage is initialized automatically when it is provably erased.
+If a board carries factory-test data and its session partition cannot mount,
+the portal offers a guarded **new or intentionally erased board** recovery
+path. Existing loggers are never formatted automatically.
+
+Radio is optional and is needed only for a separate receiver showing real-time
+temperatures. Recording, USB downloads and analysis work without pairing.
+The **Radio (optional)** tab shares the portal connection: disconnect before
+choosing the other board. Save one private recovery kit and use it for both.
 
 ### Browser workflow
 
@@ -36,8 +46,9 @@ firmware, mapping probes, or processing downloaded data.
 2. Open the portal in a current desktop Chrome or Edge.
 3. In **Prepare**, install SLOG firmware, verify the running logger, and map the
    eight probes. The portal downloads a backup of the completed probe map.
-4. If **Records** reports that storage is unavailable, perform the one-time
-   storage initialization described below.
+4. In **Records**, confirm that storage is ready and the 12-hour reserve is
+   available. If a genuinely new board needs recovery, use the explicitly
+   guarded new-board storage action; do not use it for an existing logger.
 5. Disconnect USB and power the logger for the sauna run.
 6. Reconnect later and use **Records** to CRC-check and preserve the raw
    `.slog` files.
@@ -56,6 +67,11 @@ offline after its application files and firmware package have been cached.
 GitHub Pages rebuilds the portal and its commit-identified firmware package
 from `main`; local development must use `tools/serve_portal.py` as described in
 [`docs/web-commissioning-portal.md`](docs/web-commissioning-portal.md).
+
+The portal also includes a [preheated electric-sauna example](portal/examples/preheated-electric-sauna/README.md)
+under **Analyze → Try a real sauna recording**. The sauna was already fully
+heated; useful observations start around 15 minutes. All raw readings and
+unknown-duration power gaps are preserved.
 
 ## Project scope and example
 
@@ -137,18 +153,22 @@ is saved to `sensor-map.pending.json`, so an interrupted replacement cannot
 overwrite the last verified `sensor-map.json`. The final map replaces `sensor-map.json`
 atomically only after all post-reboot checks pass.
 
-Commissioning does not format LittleFS or alter existing `.slog` files.
-`LOG FORMAT YES` likewise leaves the probe mapping in NVS intact. A full-chip
-erase does remove the mapping, so keep `sensor-map.json` as a backup. The
+Commissioning does not format LittleFS or alter existing `.slog` files. The
+challenged storage-format flow likewise leaves the probe mapping in NVS intact.
+A full-chip erase does remove the mapping, so keep `sensor-map.json` as a backup. The
 line-oriented protocol intended for both this tool and the browser portal is
 documented in
 [`docs/probe-commissioning.md`](docs/probe-commissioning.md).
 
 ## Session logging
 
-- Samples are taken every 10 seconds.
+- Active sampling runs every 10 seconds. Cold standby checks probes every
+  150 seconds and sends fresh temperatures every 15 minutes (5 minutes in the
+  testing profile). See [power management](docs/power-management.md).
 - No session can start without one complete, valid eight-probe configuration.
-- The latest 10 minutes are retained in RAM while idle.
+- Up to 10 minutes of active pretrigger samples are retained in RAM. Entering
+  cold standby clears that ring; cold checks do not populate it. Recording
+  after waking can therefore begin with a shorter pretrigger history.
 - A session starts after any valid probe remains above 40 C for 30 seconds.
 - The pre-trigger readings are committed immediately; later blocks are flushed
   every 10 minutes, limiting sudden-power-loss exposure to the current block.
@@ -161,6 +181,11 @@ documented in
   An unexpected power cut can therefore lose or corrupt only the block being
   assembled or written; the offline parser stops at the first incomplete or
   invalid block and preserves all earlier blocks.
+- New sessions are staged until their header and pretrigger block are durable,
+  then published atomically. Appends check write, sync, and close errors before
+  acknowledging committed records. Interrupted staging files are preserved
+  outside the published-session catalog; see
+  [storage reliability](docs/storage-reliability.md) for recovery boundaries.
 - If power returns while the sauna is still hot, the new session records the
   interrupted session ID as a probable continuation. A cold reading from at
   least six probes cancels that link.
@@ -182,25 +207,21 @@ documented in
 
 ### First-use storage initialization
 
-SLOG never formats its flash filesystem automatically, and the portal does not
-offer a format button. A factory-new board—or a board whose session partition
-has been deliberately erased—must therefore be initialized once before it can
-record sessions.
+At boot SLOG mounts the session partition without formatting it. If the entire
+partition is still erased, SLOG initializes it automatically before session
+logging can begin. A nonblank partition that cannot mount is left untouched;
+this protects records from vendor residue, interrupted writes, and hardware
+faults.
 
-This is the only normal setup operation that is not yet available in the
-portal. Python is not inherently required: with the running logger connected,
-any 115200-baud serial terminal can send this exact line:
+If a newly purchased board contains factory-test data that prevents mounting,
+the portal can offer **Initialize or erase session storage**. This action is
+only for a new or intentionally erased board: it displays the current storage
+state, requires typing `ERASE SLOG STORAGE`, obtains a one-use device challenge,
+and asks for a final confirmation. It permanently deletes `.slog` files but
+does not erase the probe map in NVS or the core-dump partition.
 
-```text
-LOG FORMAT YES
-```
-
-Wait for `LOG_FORMAT ok=1`. Formatting destroys any session records already in
-that partition, so use it only for new or intentionally cleared storage. It
-does not erase the probe map stored in NVS.
-
-From a SLOG development checkout, the supplied Python helper sends the same
-command:
+The development helper uses the same challenge protocol and still requires an
+explicit flag:
 
 ```sh
 .venv/bin/python tools/logs.py format --yes
@@ -302,8 +323,9 @@ ceiling or floor height can be added later without changing sensor identity.
 ## Unattended sauna test checklist
 
 1. In the portal's **Prepare** section, install or verify the firmware and
-   complete probe setup. Initialize blank storage once if **Records** reports
-   that the filesystem is unavailable.
+   complete probe setup. Blank storage initializes automatically; use the
+   guarded new-board action only when a genuinely new or intentionally erased
+   board still cannot mount its session partition.
 2. In **Records**, confirm that the 12-hour storage reserve is ready and
    preserve any sessions not already backed up. Keep the XIAO and wiring in the
    coolest practical location; keep the USB power bank outside the sauna.
@@ -340,3 +362,11 @@ SLOG deliberately separates licenses by material:
 The exact path rules and full license texts are in
 [`LICENSES/README.md`](LICENSES/README.md). Vendored dependencies retain their
 upstream licenses.
+
+## Live integration and V3 identity
+
+New recordings preserve acquisition identity in SLOG V3; V1/V2 remain readable.
+Encrypted ESP-NOW is available through explicitly provisioned pairing, with radio
+off by default. See [the identity and radio contract](docs/sample-identity-and-radio.md)
+for offline pairing, compatibility, and hardware release gates. The logger owns
+the shared protocol packages; the private receiver consumes a pinned snapshot.

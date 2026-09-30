@@ -1,6 +1,14 @@
 #include <Arduino.h>
 #include <DallasTemperature.h>
 #include <OneWire.h>
+#include <esp_timer.h>
+#include <esp_mac.h>
+#include <esp_system.h>
+#include <esp_sleep.h>
+#include <Preferences.h>
+#include "power_policy.h"
+#include <bootloader_random.h>
+#include "radio_link.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -14,7 +22,7 @@
 #include "session_logger.h"
 
 #ifndef SAUNA_FIRMWARE_VERSION
-#define SAUNA_FIRMWARE_VERSION "0.3.0-dev"
+#define SAUNA_FIRMWARE_VERSION "0.4.0-dev"
 #endif
 
 #ifndef SAUNA_SOURCE_COMMIT
@@ -54,6 +62,13 @@ struct DiscoverySnapshot {
 OneWire oneWire(kOneWirePin);
 DallasTemperature sensors(&oneWire);
 sauna::SessionLogger logger;
+sauna_link::RadioLink radio;
+sauna::PowerPolicy powerPolicy;
+uint64_t sleepTotalMs = 0;
+uint32_t sleepCount = 0, sleepErrors = 0;
+
+uint64_t sourceId = 0, bootNonce = 0;
+uint32_t skippedScheduleCount = 0;
 sauna::ProbeConfigStore probeConfig;
 sauna::ProbeMapping activeProbeMapping{};
 DiscoverySnapshot latestDiscovery{};
@@ -238,6 +253,9 @@ void collectSample(uint32_t now) {
   reading.capturedAtMs = now;
   reading.chipCentiC = INT16_MIN;
   ++sampleSequence;
+  reading.identity.sequence = sampleSequence;
+  reading.identity.monotonicMs = static_cast<uint64_t>(esp_timer_get_time()) / 1000;
+  reading.identity.skippedScheduleCount = skippedScheduleCount;
   char telemetryLine[kTelemetryLineCapacity]{};
   size_t telemetryLength = 0;
   bool telemetryComplete = appendFormatted(
@@ -298,7 +316,40 @@ void collectSample(uint32_t now) {
   logger.setProbeBusStatus(
       latestDiscovery.count,
       static_cast<uint8_t>(__builtin_popcount(reading.validMask)));
-  logger.addSample(reading);
+  const uint32_t previousPeriod = powerPolicy.sampleMs();
+  const bool send = powerPolicy.observe(reading.identity.monotonicMs,
+      reading.validMask, reading.centiC, logger.active(),
+      activeProbeMappingReady && logger.recordingHealthy() &&
+      !commissioningLocked && !probeConfigRestartRequired);
+  if (previousPeriod != powerPolicy.sampleMs())
+    nextConversionAt = now + powerPolicy.sampleMs() - kConversionTimeMs;
+  if (send) radio.setAwake(true);
+  if (logger.addSample(reading, powerPolicy.standby()) && send) {
+    sauna_wire::SampleV1 sample{};
+    sample.sourceId = sourceId;
+    sample.bootNonce = bootNonce;
+    sample.bootCounter = logger.bootId();
+    sample.sequence = reading.identity.sequence;
+    sample.senderMonotonicMs = reading.identity.monotonicMs;
+    sample.skippedScheduleCount = reading.identity.skippedScheduleCount;
+    sample.recordingSessionId = logger.sessionId();
+    sample.mappingGeneration = activeProbeMapping.generation;
+    sample.geometryId = sauna_wire::kGeometryColumn8At20Cm;
+    sample.nominalPeriodMs = sauna::kSampleIntervalMs;
+    sample.expectedProbeCount = sauna::kSensorCount;
+    sample.validMask = reading.validMask;
+    sample.chipCentiC = reading.chipCentiC;
+    for (size_t i=0; i<sauna::kSensorCount; ++i) sample.centiC[i] = reading.centiC[i];
+    sample.statusFlags = reading.statusFlags | sauna_wire::kMappingReady;
+    if (logger.bootCounterValid()) sample.statusFlags |= sauna_wire::kBootCounterValid;
+    if (logger.recordingHealthy()) sample.statusFlags |= sauna_wire::kStorageReady;
+    if (logger.active()) sample.statusFlags |= sauna_wire::kSessionActive;
+    if (powerPolicy.standby()) {
+      sample.statusFlags |= sauna_wire::kColdStandby;
+      if (powerPolicy.test()) sample.statusFlags |= sauna_wire::kStandbyTest;
+    }
+    radio.offer(sample);
+  }
 
   // TELEM is autonomous diagnostics, not part of record persistence.  Queue a
   // complete newline-terminated line in one operation only when HWCDC reports
@@ -589,7 +640,35 @@ bool processConfigCommand(const String& command) {
 }
 
 bool processDeviceCommand(const String& command) {
-  return processSystemCommand(command) || processConfigCommand(command);
+  if (command.startsWith("POWER")) {
+    if (command == "POWER STATUS") {
+      Serial.printf("POWER_STATUS mode=%s state=%s sample_ms=%u heartbeat_ms=%u usb_awake=%u sleeps=%u slept_ms=%llu errors=%u\n",
+          powerPolicy.test() ? "test" : "normal", powerPolicy.standby() ? "standby" : "awake",
+          powerPolicy.sampleMs(), powerPolicy.heartbeatMs(), static_cast<bool>(Serial),
+          sleepCount, static_cast<unsigned long long>(sleepTotalMs), sleepErrors);
+    } else if (command == "POWER WAKE") {
+      powerPolicy.wake(static_cast<uint64_t>(esp_timer_get_time()) / 1000);
+      radio.setAwake(true);
+      if (!logger.active() && !commissioningLocked) restartConversionSchedule();
+      Serial.println("POWER_CONFIG ok=1 window_s=300 persistent=0");
+    } else if (command == "POWER TEST" || command == "POWER NORMAL") {
+      if (logger.active() || commissioningLocked) { Serial.println("POWER_ERROR busy"); return true; }
+      const uint8_t mode = command == "POWER TEST" ? 1 : 0;
+      Preferences prefs;
+      bool ok = prefs.begin("sauna_power", false);
+      if (ok) {
+        ok = prefs.putUChar("profile", mode) == 1 && prefs.getUChar("profile", 255) == mode;
+        prefs.end();
+      }
+      if (ok) {
+        powerPolicy.setTest(mode == 1, static_cast<uint64_t>(esp_timer_get_time()) / 1000);
+        radio.setAwake(true); restartConversionSchedule();
+      }
+      Serial.printf("POWER_CONFIG ok=%u mode=%s\n", ok, mode ? "test" : "normal");
+    } else Serial.println("POWER_ERROR invalid_command");
+    return true;
+  }
+  return radio.command(command, logger.active()) || processSystemCommand(command) || processConfigCommand(command);
 }
 }  // namespace
 
@@ -597,8 +676,16 @@ void setup() {
   Serial.begin(115200);
   enableLoopWDT();
   if (Serial)
-    Serial.printf("sauna logger %s: Wi-Fi disabled protocol=1\n",
+    Serial.printf("sauna logger %s: radio defaults off protocol=1\n",
                   SAUNA_FIRMWARE_VERSION);
+  uint8_t mac[6]{};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK)
+    for (auto byte : mac) sourceId = (sourceId << 8) | byte;
+  // Temporary hardware entropy source, disabled before any sensor/ADC use.
+  bootloader_random_enable();
+  do { esp_fill_random(&bootNonce, sizeof(bootNonce)); } while (!bootNonce);
+  bootloader_random_disable();
+  logger.setBootIdentity(sourceId, bootNonce);
   printRtcSlowClockDiagnostic();
   configureSensors();
   const bool configStoreAvailable = probeConfig.begin();
@@ -609,6 +696,14 @@ void setup() {
   syncProbeConfigStatus();
   scanProbeBus(false);
   logger.begin();
+  radio.begin(true);
+  Preferences powerPrefs;
+  bool testPower = false;
+  if (powerPrefs.begin("sauna_power", true)) {
+    testPower = powerPrefs.getUChar("profile", 0) == 1;
+    powerPrefs.end();
+  }
+  powerPolicy.begin(static_cast<uint64_t>(esp_timer_get_time()) / 1000, testPower);
   if (!configStoreAvailable && Serial)
     Serial.println("logger_event=probe_config_unavailable");
   if (Serial)
@@ -638,8 +733,27 @@ void loop() {
   if (!conversionInProgress &&
       static_cast<int32_t>(now - nextConversionAt) >= 0) {
     startConversion(now);
-    do {
-      nextConversionAt += sauna::kSampleIntervalMs;
-    } while (static_cast<int32_t>(now - nextConversionAt) >= 0);
+    nextConversionAt += powerPolicy.sampleMs();
+    while (static_cast<int32_t>(now - nextConversionAt) >= 0) {
+      ++skippedScheduleCount;
+      nextConversionAt += powerPolicy.sampleMs();
+    }
   }
+  radio.setAwake(powerPolicy.radioNeeded(static_cast<uint64_t>(esp_timer_get_time()) / 1000));
+  radio.poll();
+  // Keep USB diagnostics responsive. On a power supply without a USB host,
+  // sleep in bounded slices so the watchdog and scheduler remain serviced.
+  const bool radioOff = radio.safeToSleep() ||
+      (radio.config().mode == sauna_link::RadioMode::Off && !radio.fault());
+  const int32_t untilSample = static_cast<int32_t>(nextConversionAt - millis());
+  if (powerPolicy.standby() && !logger.active() && !commissioningLocked &&
+      !conversionInProgress && !Serial && radioOff && untilSample > 20) {
+    const uint32_t napMs = untilSample > 1000 ? 1000 : static_cast<uint32_t>(untilSample);
+    const int64_t before = esp_timer_get_time();
+    if (esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(napMs) * 1000) == ESP_OK &&
+        esp_light_sleep_start() == ESP_OK) {
+      ++sleepCount; sleepTotalMs += (esp_timer_get_time() - before) / 1000;
+    } else ++sleepErrors;
+  }
+  delay(1);
 }

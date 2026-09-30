@@ -6,6 +6,14 @@ store over USB, and **Analyze** reads raw `.slog` files without a server or
 upload. All runtime code and plotting are included in the offline application
 shell; there are no charting or storage service dependencies.
 
+## Recording-health status limitation
+
+As recorded in the [28 September audit](field-readiness-2026-09-28.md), Records
+does not yet parse `recording_ok` / `recording_fault`. A mounted filesystem and
+available reserve are not proof that recording writes are healthy. Keep raw
+download and CRC-validation workflows available while this status handling is
+updated; the actual field recording passed both Python and browser parsing.
+
 ## Analyze raw files
 
 Choose one or more `.slog` files in **Analyze**. The browser validates the
@@ -92,8 +100,9 @@ deletion. A confirmation names the entire chain, and segments are removed
 newest to oldest. The portal also blocks both paths during recording,
 unresolved commissioning/restart
 state, journaled automatic retention, an unsafe catalog, or a probable
-hot-start continuation. It does not offer format, bulk erase, or crash-dump
-erase.
+hot-start continuation. Storage formatting is a separate challenged action
+that requires an explicit erase phrase and final device confirmation; the
+portal never offers bulk whole-flash or crash-dump erase.
 
 Receipts exist only in the connected page. Quick-download override state is
 also temporary and is cleared on catalog refresh, disconnect, or reload. A

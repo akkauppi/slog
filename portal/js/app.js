@@ -26,6 +26,7 @@ import {
 import { FlashInstallationUi } from "./flash-ui.js";
 import { DiagnosticConsole, DiagnosticTranscript } from "./diagnostics.js";
 import { DataWorkspace } from "./data-workspace.js";
+import { RadioWorkspace } from "./radio-ui.js";
 
 const PENDING_STORAGE_KEY = "sauna-logger:probe-map:pending:v1";
 const VERIFIED_STORAGE_KEY = "sauna-logger:probe-map:verified:v1";
@@ -116,6 +117,7 @@ let initialTaskRendered = false;
 let flashUi = null;
 let installedFirmwareExpectation = null;
 let dataWorkspace = null;
+let radioWorkspace = null;
 
 const diagnosticConsole = new DiagnosticConsole({
   root: diagnosticConsoleRoot,
@@ -555,7 +557,7 @@ function setupWorkflowUnsafeToLeave() {
 }
 
 function workflowUnsafeToLeave() {
-  return setupWorkflowUnsafeToLeave() || Boolean(dataWorkspace?.unsafeToLeave);
+  return setupWorkflowUnsafeToLeave() || Boolean(dataWorkspace?.unsafeToLeave) || Boolean(radioWorkspace?.busy);
 }
 
 function showConnect({ afterInstall = false } = {}) {
@@ -641,6 +643,7 @@ async function closeTransport() {
     client = null;
     setConnection(false);
     dataWorkspace?.handleConnectionClosed();
+    radioWorkspace?.handleConnectionClosed();
   }
 }
 
@@ -679,6 +682,20 @@ async function connectRecordsLogger() {
     }
     throw error;
   }
+}
+
+async function connectRadioBoard() {
+  if (!portalEnvironmentSupported()) throw new Error("USB radio setup needs a secure top-level page in a desktop browser with Web Serial.");
+  if (!transport?.isOpen) {
+    try {
+      await attachPort(await requestSerialPort());
+      controller = null;
+    } catch (error) {
+      await discardNewRecordsTransport();
+      throw error;
+    }
+  }
+  return transport;
 }
 
 async function disconnectRecordsLogger() {
@@ -1666,6 +1683,7 @@ function handlePhysicalDisconnect(event) {
   setConnection(false, "Logger disconnected");
   logActivity("USB logger disconnected");
   dataWorkspace?.handleConnectionClosed();
+  radioWorkspace?.handleConnectionClosed();
   if (controller?.snapshot.phase === CommissioningPhase.COMPLETE) {
     return;
   }
@@ -1803,7 +1821,8 @@ writeDialog.addEventListener("close", () => {
 
 disconnectButton.dataset.available = "true";
 disconnectButton.addEventListener("click", () => {
-  if (dataWorkspace?.activeView === "records") {
+  if (radioWorkspace?.busy) return;
+  if (["records", "radio"].includes(dataWorkspace?.activeView)) {
     void dataWorkspace.disconnect();
     return;
   }
@@ -1863,9 +1882,10 @@ dataWorkspace = new DataWorkspace({
   connectLogger: connectRecordsLogger,
   disconnectLogger: disconnectRecordsLogger,
   environmentSupported: portalEnvironmentSupported,
-  canNavigate: () => !setupWorkflowUnsafeToLeave(),
+  canNavigate: () => !setupWorkflowUnsafeToLeave() && !radioWorkspace?.busy,
   onNavigationBlocked: (message) => {
     if (dataWorkspace?.activeView === "prepare") setMessage(message, "error");
+    if (dataWorkspace?.activeView === "radio") radioWorkspace?.show(message, true);
   },
   onUnsafeChange: () => {
     disconnectButton.disabled = busy || Boolean(dataWorkspace?.operation);
@@ -1877,5 +1897,17 @@ dataWorkspace = new DataWorkspace({
   },
   onActivity: logActivity,
 });
+radioWorkspace = new RadioWorkspace({
+  document,
+  connectBoard: connectRadioBoard,
+  getTransport: () => transport,
+  disconnectBoard: disconnectRecordsLogger,
+  onBusyChange: () => {
+    disconnectButton.disabled = busy || Boolean(dataWorkspace?.operation) || Boolean(radioWorkspace?.busy);
+    updateAction.disabled = busy || !waitingServiceWorker || workflowUnsafeToLeave();
+  },
+  onIdentity: (status) => setConnection(true, `${status.role === "receiver" ? "Receiver" : "Logger"} connected`),
+});
+if (location.hash === "#radio") dataWorkspace.requestView("radio", { focus: false });
 logActivity("Portal opened · managed workflows active · manual commands not provided");
 initializeFlashUi();

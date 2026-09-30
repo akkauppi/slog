@@ -32,6 +32,7 @@
           <button type="button" data-portal-view="prepare" aria-controls="prepare-view" aria-current="page">
             Prepare
           </button>
+          <button type="button" data-portal-view="radio" aria-controls="radio-view">Radio (optional)</button>
           <button type="button" data-portal-view="records" aria-controls="records-view">
             Records
           </button>
@@ -65,7 +66,8 @@
         <p>
           SLOG is open source software for logging saunas. Install the firmware,
           verify the logger, and assign its eight temperature probes. Everything
-          stays in this browser.
+          stays in this browser. Radio setup is optional: only add it if you want
+          a separate receiver to show live readings. Recording and USB downloads work without it.
         </p>
       </section>
 
@@ -346,6 +348,13 @@
             <div><dt>Retention</dt><dd id="records-retention">&mdash;</dd></div>
           </dl>
           <p class="retention-note" id="records-retention-note" hidden></p>
+          <details class="danger-zone" id="storage-danger-zone" hidden>
+            <summary>Storage recovery and erasure</summary>
+            <p id="storage-danger-description"></p>
+            <button class="button button--quiet" id="storage-format" type="button">
+              Initialize or erase session storage
+            </button>
+          </details>
           <div class="actions">
             <button class="button button--primary" id="records-connect" type="button">Choose logger</button>
             <button class="button button--secondary" id="records-refresh" type="button" hidden>Refresh records</button>
@@ -354,6 +363,10 @@
             SLOG checks the firmware before reading records. Downloads
             pause while a recording is active. Nothing is uploaded.
           </p>
+          <p class="privacy-note">The logger samples every 10 seconds while awake or recording.
+            When cold, it checks every 150 seconds and resumes fast sampling at 35 °C
+            or a probe fault. Recording starts after a valid probe stays above 40 °C
+            for 30 seconds. A start soon after standby may have less pre-trigger history.</p>
         </section>
 
         <section class="data-section" aria-labelledby="catalog-title">
@@ -388,6 +401,13 @@
             <input id="analysis-files" type="file" accept=".slog,application/octet-stream" multiple>
           </label>
           <p class="privacy-note">Files are read locally and never uploaded.</p>
+          <details class="radio-details"><summary>Try a real sauna recording</summary>
+            <p>This electrically heated sauna was fully hot before recording. Useful observations begin at approximately 15 minutes. The example preserves all readings and marks unknown power gaps between three linked segments.</p>
+            <button class="button button--secondary" id="analysis-example" type="button">Open preheated electric sauna</button>
+            <p>Raw files: <a href="./examples/preheated-electric-sauna/session-5.slog" download>segment 5</a>,
+              <a href="./examples/preheated-electric-sauna/session-6.slog" download>segment 6</a>,
+              <a href="./examples/preheated-electric-sauna/session-7.slog" download>segment 7</a>.</p>
+          </details>
           <div class="message" id="analysis-message" role="status" aria-live="polite" hidden></div>
           <div id="analysis-group-issues" class="analysis-issues" hidden></div>
         </section>
@@ -485,6 +505,49 @@
             <ul id="analysis-integrity-list"></ul>
           </section>
         </section>
+      </section>
+
+      <section class="portal-view data-view" id="radio-view" data-view="radio" aria-labelledby="radio-title" hidden>
+        <div class="page-intro">
+          <p class="section-label">Optional · Live receiver display</p>
+          <h1 id="radio-title" tabindex="-1">Add a live receiver</h1>
+          <p>Only set up radio if you want a separate receiver unit to show real-time temperatures. Your logger records sessions, downloads them over USB, and opens them in Analyze without radio pairing.</p>
+          <p class="privacy-note">Have a receiver? Pair both boards over USB below. They then exchange encrypted local readings without a router or internet connection. Radio stays off until pairing is saved.</p>
+        </div>
+        <div class="message" id="radio-message" role="status" aria-live="polite" hidden></div>
+        <section class="data-section" aria-labelledby="radio-board-title">
+          <div class="section-heading"><div><p class="section-label">01 · Identify</p><h2 id="radio-board-title">Connect either board</h2></div><p id="radio-board">No board connected</p></div>
+          <p id="radio-health">Choose a logger or receiver to inspect its radio.</p>
+          <div class="actions"><button class="button button--primary" id="radio-connect" type="button">Choose board</button><button class="button button--secondary" id="radio-refresh" type="button">Refresh status</button></div>
+          <p class="privacy-note">An already connected logger is reused. To switch boards, use Disconnect in the header, then choose the other board. Close other portal tabs and serial monitors.</p>
+          <details class="radio-details"><summary>Connection troubleshooting and details</summary><p>If connection times out, reconnect USB only when the logger is cold and idle. Do not restart an active recording.</p><pre id="radio-status">No board connected.</pre></details>
+        </section>
+        <div class="radio-grid">
+          <section class="data-section" aria-labelledby="radio-kit-title">
+            <p class="section-label">02 · Prepare</p><h2 id="radio-kit-title">One kit for both boards</h2>
+            <p>Connect each board in turn to fill in its address. Prepare once, then use the same private recovery kit for both.</p>
+            <div class="radio-fields"><label for="radio-logger">Logger address<input id="radio-logger" placeholder="02:00:00:00:00:01" maxlength="17" spellcheck="false"></label><label for="radio-receiver">Receiver address<input id="radio-receiver" placeholder="02:00:00:00:00:02" maxlength="17" spellcheck="false"></label></div>
+            <label class="radio-field" for="radio-channel">Radio channel<input id="radio-channel" type="number" min="1" max="11" value="6"></label>
+            <div class="actions"><button class="button button--secondary" id="radio-prepare" type="button">Prepare new pairing</button><button class="button button--quiet" id="radio-export" type="button">Save private kit</button></div>
+            <label class="file-control" for="radio-import">Restore a saved kit<input id="radio-import" type="file" accept=".json,application/json"></label>
+            <p class="privacy-note">Preparing again creates new keys. The recovery kit stays on your computer and contains private radio keys.</p>
+          </section>
+          <section class="data-section" aria-labelledby="radio-apply-title">
+            <p class="section-label">03 · Apply and verify</p><h2 id="radio-apply-title">Finish each board</h2>
+            <p id="radio-pairing-summary">Prepare or restore a kit to begin.</p>
+            <label class="radio-check"><input id="radio-saved" type="checkbox"> I have saved the private recovery kit for offline use.</label>
+            <p>Apply to the connected board, reboot it, then reconnect to verify. Repeat for the other board. Pairing is complete when the receiver shows live readings.</p>
+            <div class="actions"><button class="button button--primary" id="radio-apply" type="button">Apply pairing</button><button class="button button--secondary" id="radio-reboot" type="button">Reboot board</button></div>
+            <p class="privacy-note">Pairing changes and reboot are refused while the logger is recording. Wait for recording to finish before setup.</p>
+          </section>
+        </div>
+        <section class="data-section" id="radio-power-controls" aria-labelledby="radio-power-title" hidden>
+          <p class="section-label">Reception test</p><h2 id="radio-power-title">Wake the logger</h2><p id="radio-power-status" role="status"></p>
+          <p>Open five minutes of live readings without restarting or changing the saved profile. In cold standby the radio sleeps between heartbeats; this is expected.</p>
+          <div class="actions"><button class="button button--primary" id="radio-power-wake" type="button">Wake for five minutes</button></div>
+          <details class="radio-details"><summary>Saved heartbeat profile</summary><p>Normal sends a cold heartbeat every 15 minutes; test sends one every 5 minutes. Both check temperatures every 150 seconds and restore 10-second sampling on heat or a probe fault. Profile changes are refused during recording or probe setup.</p><div class="actions"><button class="button button--secondary" id="radio-power-normal" type="button">Save normal profile</button><button class="button button--secondary" id="radio-power-test" type="button">Save test profile</button></div></details>
+        </section>
+        <section class="data-section" aria-labelledby="radio-recover-title"><h2 id="radio-recover-title">Recover a radio fault</h2><p>Restart only the radio while temperature acquisition and recording continue. For a sleeping logger, use Wake above.</p><button class="button button--quiet" id="radio-recover" type="button">Recover radio without reboot</button></section>
       </section>
     </main>
 
@@ -613,6 +676,29 @@
           <button class="button button--secondary" value="cancel">Keep on logger</button>
           <button class="button button--primary" id="confirm-remove-run" value="confirm">
             Remove run from logger
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="format-storage-dialog" aria-labelledby="format-storage-title">
+      <form method="dialog">
+        <p class="section-label">Irreversible storage action</p>
+        <h2 id="format-storage-title">Erase all session storage?</h2>
+        <p id="format-storage-description"></p>
+        <p id="format-storage-warning" class="message message--error">
+          This deletes every raw .slog session on the logger. Probe configuration
+          and crash-dump data are not changed.
+        </p>
+        <label for="format-storage-confirmation">
+          Type <code>ERASE SLOG STORAGE</code> to continue.
+          <input id="format-storage-confirmation" autocomplete="off" spellcheck="false">
+        </label>
+        <p id="format-storage-challenge" class="retention-note" hidden></p>
+        <div class="actions">
+          <button class="button button--secondary" value="cancel">Cancel</button>
+          <button class="button button--primary" id="confirm-format-storage" value="confirm" disabled>
+            Request erase challenge
           </button>
         </div>
       </form>

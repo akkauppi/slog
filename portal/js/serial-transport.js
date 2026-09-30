@@ -529,6 +529,9 @@ export class CommissioningProtocolClient {
               { cause: error },
             );
           }
+          if (error instanceof ProtocolTimeoutError) {
+            throw new ProtocolTimeoutError(`${error.message}. The logger may be in cold standby. Close other portal tabs and serial monitors. If the logger is cold and idle, unplug and reconnect USB, then choose it again. Do not restart an active recording.`);
+          }
           throw error;
         }
       }

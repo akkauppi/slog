@@ -27,6 +27,7 @@ CRC = struct.Struct("<I")
 BLOCK = struct.Struct("<IIHHI")
 RECORD_V1 = struct.Struct("<i8hB")
 RECORD_V2 = struct.Struct("<i8hBhH")
+RECORD_V3 = struct.Struct("<i8hBhHIQI")
 RECORD = RECORD_V1
 FOOTER = struct.Struct("<IB3xIiI")
 HEADER_MAGIC = b"SAUNLOG1"
@@ -59,6 +60,9 @@ class Sample:
     temperatures_c: tuple[float | None, ...]
     chip_temperature_c: float | None = None
     status_flags: int = 0
+    acquisition_sequence: int | None = None
+    monotonic_ms: str | None = None
+    skipped_schedule_count: int | None = None
 
 
 @dataclass
@@ -78,13 +82,22 @@ class Session:
     continuation_delay_seconds: int = 0
     initial_rtc_source: str = "unknown"
     initial_rtc_hz: int = 0
+    start_hold_seconds: int = 30
+    final_relative_seconds: int | None = None
+    footer_record_count: int | None = None
+    source_id: str | None = None
+    boot_nonce: str | None = None
+    mapping_generation: int | None = None
+    identity_flags: int = 0
+    producer_commit: str | None = None
+    producer_version: str | None = None
 
 
 def parse_session(data: bytes) -> Session:
     if len(data) < HEADER_V1.size + 8 * DESCRIPTOR.size + CRC.size:
         raise ValueError("file is shorter than a session header")
     magic, version, header_size = struct.unpack_from("<8sHH", data)
-    header_struct = HEADER_V1 if version == 1 else HEADER_V2 if version == 2 else None
+    header_struct = HEADER_V1 if version == 1 else HEADER_V2 if version in (2, 3) else None
     if header_struct is None:
         raise ValueError("unsupported session version")
     if len(data) < header_struct.size + 8 * DESCRIPTOR.size + CRC.size:
@@ -95,7 +108,7 @@ def parse_session(data: bytes) -> Session:
         raise ValueError("unsupported session magic or version")
     sensor_count = values[7]
     minimum_header_size = header_struct.size + sensor_count * DESCRIPTOR.size + CRC.size
-    if header_size > len(data) or header_size < minimum_header_size:
+    if header_size > len(data) or header_size < minimum_header_size or (version == 3 and header_size != 204):
         raise ValueError("invalid header size")
     expected_crc = CRC.unpack_from(data, header_size - CRC.size)[0]
     if zlib.crc32(data[: header_size - CRC.size]) & 0xFFFFFFFF != expected_crc:
@@ -104,13 +117,19 @@ def parse_session(data: bytes) -> Session:
     continuation_of = values[14]
     if sensor_count != 8:
         raise ValueError(f"expected 8 sensors, found {sensor_count}")
+    if version == 3:
+        source, nonce, mapping, geometry, expected, identity_flags = struct.unpack_from("<QQIHBB", data, 138)
+        if not source or not nonce or not mapping or geometry != 1 or expected != 255 or data[27] or any(data[198:200]) or identity_flags & ~7:
+            raise ValueError("invalid V3 identity header")
+        if bool(identity_flags & 1) != bool(values[15]):
+            raise ValueError("invalid V3 boot counter validity")
     sensors = []
-    boot_id = values[15] if version == 2 else 0
-    reset_reason = RESET_REASONS.get(values[16], f"reason_{values[16]}") if version == 2 else "unknown"
-    continuation_kind = CONTINUATION_KINDS.get(values[17], f"kind_{values[17]}") if version == 2 else ("max_duration" if continuation_of else "none")
-    continuation_delay_seconds = values[19] if version == 2 else 0
-    initial_rtc_source = RTC_SOURCES.get(values[18], f"source_{values[18]}") if version == 2 else "unknown"
-    initial_rtc_hz = values[20] if version == 2 else 0
+    boot_id = values[15] if version >= 2 else 0
+    reset_reason = RESET_REASONS.get(values[16], f"reason_{values[16]}") if version >= 2 else "unknown"
+    continuation_kind = CONTINUATION_KINDS.get(values[17], f"kind_{values[17]}") if version >= 2 else ("max_duration" if continuation_of else "none")
+    continuation_delay_seconds = values[19] if version >= 2 else 0
+    initial_rtc_source = RTC_SOURCES.get(values[18], f"source_{values[18]}") if version >= 2 else "unknown"
+    initial_rtc_hz = values[20] if version >= 2 else 0
     offset = header_struct.size
     for _ in range(sensor_count):
         rom, height = DESCRIPTOR.unpack_from(data, offset)
@@ -121,9 +140,11 @@ def parse_session(data: bytes) -> Session:
     warnings: list[str] = []
     finalized = False
     finish_reason = "interrupted"
+    final_relative_seconds = None
+    footer_record_count = None
     offset = header_size
     expected_sequence = 0
-    record_struct = RECORD_V1 if version == 1 else RECORD_V2
+    record_struct = RECORD_V1 if version == 1 else RECORD_V2 if version == 2 else RECORD_V3
     while offset < len(data):
         if len(data) - offset >= FOOTER.size:
             footer = FOOTER.unpack_from(data, offset)
@@ -133,6 +154,8 @@ def parse_session(data: bytes) -> Session:
                     warnings.append("invalid footer CRC; treating session as interrupted")
                 else:
                     finalized = True
+                    footer_record_count = footer[2]
+                    final_relative_seconds = footer[3]
                     finish_reason = FINISH_REASONS.get(footer[1], f"reason_{footer[1]}")
                     if footer[2] != len(samples):
                         warnings.append(
@@ -152,9 +175,27 @@ def parse_session(data: bytes) -> Session:
             warnings.append("ignored torn trailing block payload")
             break
         payload = data[payload_start:payload_end]
-        if zlib.crc32(payload) & 0xFFFFFFFF != payload_crc:
+        if zlib.crc32((data[offset:offset + 12] if version == 3 else b"") + payload) & 0xFFFFFFFF != payload_crc:
             warnings.append("ignored trailing block with CRC mismatch")
             break
+        if version == 3:
+            previous = samples[-1] if samples else None
+            valid_block = count > 0 and sequence == expected_sequence
+            previous_seq = previous.acquisition_sequence if previous else None
+            previous_ms = int(previous.monotonic_ms) if previous else None
+            previous_skipped = previous.skipped_schedule_count if previous else None
+            for index in range(count):
+                record = record_struct.unpack_from(payload, index * record_struct.size)
+                mask, chip, flags, seq, ms, skipped = record[9:]
+                valid_block &= all(bool(mask & (1 << i)) == (value != -32768) for i, value in enumerate(record[1:9]))
+                valid_block &= bool(flags & 1) == (chip != -32768) and bool(flags & 8) == (mask != 255)
+                if previous_seq is not None:
+                    valid_block &= 0 < ((seq - previous_seq) & 0xffffffff) < 0x80000000 and ms > previous_ms
+                    valid_block &= ((skipped - previous_skipped) & 0xffffffff) < 0x80000000
+                previous_seq, previous_ms, previous_skipped = seq, ms, skipped
+            if not valid_block:
+                warnings.append("ignored trailing block with invalid sample identity or encoding")
+                break
         if sequence != expected_sequence:
             warnings.append(f"block sequence jumped from {expected_sequence} to {sequence}")
         expected_sequence = sequence + 1
@@ -165,15 +206,24 @@ def parse_session(data: bytes) -> Session:
                 value / 100.0 if valid_mask & (1 << sensor_index) else None
                 for sensor_index, value in enumerate(record[1:9])
             )
-            chip_temperature = record[10] / 100.0 if version == 2 and record[11] & 1 else None
-            status_flags = record[11] if version == 2 else 0
-            samples.append(Sample(record[0], temperatures, chip_temperature, status_flags))
+            chip_temperature = record[10] / 100.0 if version >= 2 and record[11] & 1 else None
+            status_flags = record[11] if version >= 2 else 0
+            samples.append(Sample(record[0], temperatures, chip_temperature, status_flags,
+                                  record[12] if version == 3 else None,
+                                  str(record[13]) if version == 3 else None,
+                                  record[14] if version == 3 else None))
         offset = payload_end
     return Session(
         session_id, sample_interval_ms, sensors, samples, finalized, finish_reason,
         warnings, continuation_of, version, boot_id, reset_reason,
         continuation_kind, continuation_delay_seconds, initial_rtc_source,
-        initial_rtc_hz
+        initial_rtc_hz, values[12], final_relative_seconds, footer_record_count,
+        f"{source:016x}" if version == 3 else None,
+        f"{nonce:016x}" if version == 3 else None,
+        mapping if version == 3 else None,
+        identity_flags if version == 3 else 0,
+        data[162:182].hex() if version == 3 and identity_flags & 2 else None,
+        data[182:198].split(b"\0",1)[0].decode("ascii",errors="replace") if version == 3 else None,
     )
 
 
@@ -262,13 +312,15 @@ def export_csv(session: Session, destination: Path) -> None:
     with destination.open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(["relative_seconds", *[f"probe_{index}_c" for index in range(1, 9)],
-                         "chip_temperature_c", "status_flags", "rtc_slow_clock_source"])
+                         "chip_temperature_c", "status_flags", "rtc_slow_clock_source"] +
+                        (["source_id", "boot_nonce", "acquisition_sequence", "monotonic_ms", "skipped_schedule_count"] if session.version == 3 else []))
         for sample in session.samples:
             writer.writerow(
                 [sample.relative_seconds, *["" if value is None else f"{value:.2f}" for value in sample.temperatures_c],
                  "" if sample.chip_temperature_c is None else f"{sample.chip_temperature_c:.2f}",
                  f"0x{sample.status_flags:04X}",
-                 "external_32k_xtal" if sample.status_flags & 2 else "internal_or_fallback"]
+                 "external_32k_xtal" if sample.status_flags & 2 else "internal_or_fallback"] +
+                ([session.source_id, session.boot_nonce, sample.acquisition_sequence, sample.monotonic_ms, sample.skipped_schedule_count] if session.version == 3 else [])
             )
 
 
@@ -311,6 +363,12 @@ def session_report(session: Session) -> dict[str, object]:
     report = {
         "session_id": session.session_id,
         "format_version": session.version,
+        "source_id": session.source_id,
+        "boot_nonce": session.boot_nonce,
+        "producer_commit": session.producer_commit,
+        "producer_version": session.producer_version,
+        "identity_flags": session.identity_flags,
+        "mapping_generation": session.mapping_generation,
         "boot_id": session.boot_id or None,
         "reset_reason": session.reset_reason,
         "continuation_of": session.continuation_of or None,
@@ -350,11 +408,16 @@ def discover_run(input_path: Path, include_chain: bool = True) -> list[Session]:
     if not include_chain:
         return [selected]
     candidates: dict[int, Session] = {}
+    raw_by_id: dict[int, bytes] = {}
     for path in input_path.parent.glob("*.slog"):
         try:
-            session = parse_session(path.read_bytes())
+            raw = path.read_bytes()
+            session = parse_session(raw)
         except (OSError, ValueError):
             continue
+        if session.session_id in raw_by_id and raw_by_id[session.session_id] != raw:
+            raise ValueError(f"conflicting files share session ID {session.session_id}")
+        raw_by_id[session.session_id] = raw
         candidates.setdefault(session.session_id, session)
     candidates[selected.session_id] = selected
     root = selected
@@ -365,6 +428,9 @@ def discover_run(input_path: Path, include_chain: bool = True) -> list[Session]:
             raise ValueError("continuation chain contains a cycle")
         seen.add(root.session_id)
     ordered = [root]
+    # Ancestor traversal already visited the selected child. It must not exclude
+    # that child when walking forward from the root.
+    seen = {root.session_id}
     while True:
         successors = sorted(
             (session for session in candidates.values()
@@ -377,6 +443,8 @@ def discover_run(input_path: Path, include_chain: bool = True) -> list[Session]:
             raise ValueError(f"session {ordered[-1].session_id} has multiple continuation branches")
         ordered.append(successors[0])
         seen.add(successors[0].session_id)
+    if selected.session_id not in seen:
+        raise ValueError("selected session is absent from its continuation chain")
     return ordered
 
 
@@ -438,7 +506,16 @@ def main() -> int:
     try:
         if args.command == "status": lines = device.command("LOG STATUS", "LOG_STATUS")
         elif args.command == "list": lines = device.command("LOG LIST", "LOG_LIST_END")
-        elif args.command == "format": lines = device.command("LOG FORMAT YES", "LOG_FORMAT")
+        elif args.command == "format":
+            challenge = device.command("LOG FORMAT PREPARE", "LOG_FORMAT_CHALLENGE")
+            if not challenge:
+                raise RuntimeError("logger did not return a format challenge")
+            match = re.search(r"\btoken=([0-9A-Fa-f]{8})\b", challenge[-1])
+            if not match:
+                raise RuntimeError(f"invalid format challenge: {challenge[-1]}")
+            lines = challenge + device.command(
+                f"LOG FORMAT CONFIRM token={match.group(1)}", "LOG_FORMAT"
+            )
         elif args.command == "delete": lines = device.command(f"LOG DELETE {args.session_id}", "LOG_DELETE")
         elif args.command == "crash-erase": lines = device.command("LOG CRASH ERASE YES", "LOG_CRASH_ERASE")
         elif args.command == "crash-download":

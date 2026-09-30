@@ -6,7 +6,7 @@
 // never invalidate earlier committed blocks or manufacture partial samples.
 
 export const SLOG_LIMITS = Object.freeze({
-  maximumBytes: 128 * 1024,
+  maximumBytes: 256 * 1024,
   sensorCount: 8,
   recordsPerBlock: 60,
   maximumRecordsPerSegment: 4382,
@@ -193,7 +193,7 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
   );
   const version = view.getUint16(8, true);
   const fixedHeaderBytes =
-    version === 1 ? HEADER_V1_BYTES : version === 2 ? HEADER_V2_BYTES : null;
+    version === 1 ? HEADER_V1_BYTES : (version === 2 || version === 3) ? HEADER_V2_BYTES : null;
   if (fixedHeaderBytes === null) {
     parseFailure("unsupported-version", `unsupported session version ${version}`, 8);
   }
@@ -214,7 +214,7 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
   const sensorCount = view.getUint8(26);
   const requiredHeaderSize =
     fixedHeaderBytes + sensorCount * DESCRIPTOR_BYTES + CRC_BYTES;
-  if (headerSize > rawBytes.byteLength || headerSize < requiredHeaderSize) {
+  if (headerSize > rawBytes.byteLength || headerSize < requiredHeaderSize || (version === 3 && headerSize !== 204)) {
     parseFailure("invalid-header-size", "invalid header size", 10);
   }
   const storedHeaderCrc = view.getUint32(headerSize - CRC_BYTES, true);
@@ -230,6 +230,14 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
     );
   }
 
+  if (version === 3) {
+    if (!view.getBigUint64(138,true) || !view.getBigUint64(146,true) ||
+        !view.getUint32(154,true) || view.getUint16(158,true)!==1 ||
+        view.getUint8(160)!==255 || view.getUint8(27) || view.getUint16(198,true) ||
+        (view.getUint8(161)&~7) || Boolean(view.getUint8(161)&1)!==Boolean(view.getUint32(46,true))) {
+      parseFailure("invalid-identity", "invalid V3 identity header", 138);
+    }
+  }
   const sensors = [];
   let descriptorOffset = fixedHeaderBytes;
   for (let index = 0; index < sensorCount; index += 1) {
@@ -245,7 +253,7 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
 
   const samples = [];
   const warnings = [];
-  const recordBytes = version === 1 ? RECORD_V1_BYTES : RECORD_V2_BYTES;
+  const recordBytes = version === 1 ? RECORD_V1_BYTES : version === 2 ? RECORD_V2_BYTES : 41;
   let finalized = false;
   let finishReason = "interrupted";
   let finalRelativeSeconds = null;
@@ -318,9 +326,30 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
       break;
     }
     const payload = rawBytes.subarray(payloadStart, payloadEnd);
-    if (slogCrc32(payload) !== payloadCrc) {
+    const crcInput = version === 3 ? new Uint8Array(12 + payload.length) : payload;
+    if (version === 3) { crcInput.set(rawBytes.subarray(offset,offset+12)); crcInput.set(payload,12); }
+    if (slogCrc32(crcInput) !== payloadCrc) {
       warnings.push("ignored trailing block with CRC mismatch");
       break;
+    }
+    if (version === 3) {
+      let previous = samples.at(-1);
+      let validBlock = count > 0 && sequence === expectedSequence;
+      for (let i=0; i<count; ++i) {
+        const r=payloadStart+i*recordBytes;
+        const mask=view.getUint8(r+20), chip=view.getInt16(r+21,true), flags=view.getUint16(r+23,true);
+        const seq=view.getUint32(r+25,true), ms=view.getBigUint64(r+29,true), skipped=view.getUint32(r+37,true);
+        for (let probe=0;probe<8;++probe)
+          validBlock &&= Boolean(mask & (1<<probe)) === (view.getInt16(r+4+2*probe,true)!==-32768);
+        validBlock &&= Boolean(flags&1)===(chip!==-32768) && Boolean(flags&8)===(mask!==255);
+        if (previous) {
+          const delta=(seq-previous.acquisitionSequence)>>>0;
+          validBlock &&= delta>0 && delta<0x80000000 && ms>BigInt(previous.monotonicMs);
+          validBlock &&= ((skipped-previous.skippedScheduleCount)>>>0)<0x80000000;
+        }
+        previous={acquisitionSequence:seq,monotonicMs:ms,skippedScheduleCount:skipped};
+      }
+      if (!validBlock) { warnings.push("ignored trailing block with invalid sample identity or encoding"); break; }
     }
     if (sequence !== expectedSequence) {
       warnings.push(
@@ -350,18 +379,17 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
         temperaturesC.push(validMask & (1 << sensor) ? centiC / 100 : null);
       }
       const statusFlags =
-        version === 2 ? view.getUint16(recordOffset + 23, true) : 0;
+        version >= 2 ? view.getUint16(recordOffset + 23, true) : 0;
       const chipTemperatureC =
-        version === 2 && statusFlags & 1
+        version >= 2 && statusFlags & 1
           ? view.getInt16(recordOffset + 21, true) / 100
           : null;
       samples.push(
-        frozenSample(
-          relativeSeconds,
-          temperaturesC,
-          chipTemperatureC,
-          statusFlags,
-        ),
+        Object.freeze({ ...frozenSample(relativeSeconds, temperaturesC, chipTemperatureC, statusFlags),
+          acquisitionSequence: version === 3 ? view.getUint32(recordOffset+25,true) : null,
+          monotonicMs: version === 3 ? view.getBigUint64(recordOffset+29,true).toString() : null,
+          skippedScheduleCount: version === 3 ? view.getUint32(recordOffset+37,true) : null,
+        }),
       );
     }
     validBlockCount += 1;
@@ -374,6 +402,12 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
   const result = {
     version,
     headerSize,
+    sourceId: version === 3 ? view.getBigUint64(138,true).toString(16).padStart(16,"0") : null,
+    bootNonce: version === 3 ? view.getBigUint64(146,true).toString(16).padStart(16,"0") : null,
+    mappingGeneration: version === 3 ? view.getUint32(154,true) : null,
+    identityFlags: version === 3 ? view.getUint8(161) : 0,
+    producerCommit: version === 3 && (view.getUint8(161)&2) ? hex(rawBytes.subarray(162,182)).toLowerCase() : null,
+    producerVersion: version === 3 ? String.fromCharCode(...rawBytes.subarray(182,198)).split("\0")[0] : null,
     sessionId,
     sampleIntervalMs: view.getUint32(16, true),
     pretriggerMs: view.getUint32(20, true),
@@ -384,23 +418,23 @@ export function parseSlog(input, { maxBytes = SLOG_LIMITS.maximumBytes } = {}) {
     startHoldSeconds: view.getUint32(34, true),
     endHoldSeconds: view.getUint32(38, true),
     continuationOf,
-    bootId: version === 2 ? view.getUint32(46, true) : 0,
+    bootId: version >= 2 ? view.getUint32(46, true) : 0,
     resetReason:
-      version === 2
+      version >= 2
         ? namedValue(RESET_REASONS, view.getUint8(50), "reason")
         : "unknown",
     continuationKind:
-      version === 2
+      version >= 2
         ? namedValue(CONTINUATION_KINDS, view.getUint8(51), "kind")
         : continuationOf
           ? "legacy_unspecified"
           : "none",
-    continuationDelaySeconds: version === 2 ? view.getUint8(53) : 0,
+    continuationDelaySeconds: version >= 2 ? view.getUint8(53) : 0,
     initialRtcSource:
-      version === 2
+      version >= 2
         ? namedValue(RTC_SOURCES, view.getUint8(52), "source")
         : "unknown",
-    initialRtcHz: version === 2 ? view.getUint32(54, true) : 0,
+    initialRtcHz: version >= 2 ? view.getUint32(54, true) : 0,
     sensors: Object.freeze(sensors),
     samples: Object.freeze(samples),
     finalized,
@@ -552,23 +586,27 @@ export function buildRun(inputSessions) {
     const lastRelativeSeconds = session.samples.at(-1).relativeSeconds;
     const intervalSeconds = session.sampleIntervalMs / 1000;
     const predecessor = segment > 0 ? sessions[segment - 1] : null;
+    if (predecessor && session.version === 3 && predecessor.version === 3 && session.sourceId !== predecessor.sourceId)
+      throw new Error("continuation crosses device identities");
     const isProvenMaxDurationContinuation =
       previousEnd !== null &&
       previousSegmentHadPoints &&
-      session.version === 2 &&
+      session.version >= 2 &&
       session.continuationKind === "max_duration_sample_anchored" &&
       Number.isInteger(session.continuationDelaySeconds) &&
       session.continuationDelaySeconds > 0 &&
       session.continuationDelaySeconds >= session.startHoldSeconds &&
       session.continuationDelaySeconds <= 0xff &&
-      predecessor?.version === 2 &&
+      predecessor?.version >= 2 &&
       predecessor.finalized === true &&
       predecessor.finishReason === "max_duration" &&
       predecessor.footerRecordCount === predecessor.samples.length &&
       predecessor.finalRelativeSeconds ===
         predecessor.samples.at(-1)?.relativeSeconds &&
-      predecessor.bootId !== 0 &&
-      predecessor.bootId === session.bootId &&
+      ((session.version === 3 && predecessor.version === 3 &&
+        session.sourceId === predecessor.sourceId && session.bootNonce === predecessor.bootNonce) ||
+       (session.version === 2 && predecessor.version === 2 &&
+        predecessor.bootId !== 0 && predecessor.bootId === session.bootId)) &&
       predecessor.sampleIntervalMs === session.sampleIntervalMs;
     let offset = 0;
     if (isProvenMaxDurationContinuation) {
@@ -577,6 +615,9 @@ export function buildRun(inputSessions) {
       // pre-trigger ring therefore repeats part of the predecessor. Keep the
       // raw child intact on session.rawBytes, but omit repeated points here.
       offset = previousEnd + session.continuationDelaySeconds;
+      if (session.version === 3) {
+        offset = previousEnd + Number(BigInt(session.samples[0].monotonicMs) - BigInt(predecessor.samples.at(-1).monotonicMs))/1000 - session.samples[0].relativeSeconds;
+      }
     } else if (previousEnd !== null) {
       // The preceding segment and this first child sample are separated by an
       // unknown amount of powered-off time. Put both endpoints at the same
@@ -618,7 +659,10 @@ export function buildRun(inputSessions) {
     let omittedOverlap = 0;
     let appendedPoints = 0;
     for (const sample of session.samples) {
-      const observedSeconds = sample.relativeSeconds + offset;
+      const localSeconds = session.version === 3
+        ? session.samples[0].relativeSeconds + Number(BigInt(sample.monotonicMs)-BigInt(session.samples[0].monotonicMs))/1000
+        : sample.relativeSeconds;
+      const observedSeconds = localSeconds + offset;
       if (
         isProvenMaxDurationContinuation &&
         observedSeconds <= previousEnd
@@ -635,6 +679,11 @@ export function buildRun(inputSessions) {
           temperaturesC: sample.temperaturesC,
           chipTemperatureC: sample.chipTemperatureC,
           statusFlags: sample.statusFlags,
+          sourceId: session.sourceId,
+          bootNonce: session.bootNonce,
+          acquisitionSequence: sample.acquisitionSequence,
+          monotonicMs: sample.monotonicMs,
+          skippedScheduleCount: sample.skippedScheduleCount,
         }),
       );
       appendedPoints += 1;

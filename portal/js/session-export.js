@@ -161,6 +161,11 @@ export const MEASUREMENT_HEADERS = Object.freeze([
   "P8_temperature_c",
   "logger_temperature_c",
   "status_flags",
+  "source_id",
+  "boot_nonce",
+  "acquisition_sequence",
+  "monotonic_ms",
+  "skipped_schedule_count",
 ]);
 
 export function buildMeasurementRows(run) {
@@ -183,6 +188,11 @@ export function buildMeasurementRows(run) {
       ...point.temperaturesC,
       point.chipTemperatureC,
       point.statusFlags,
+      point.sourceId ?? null,
+      point.bootNonce ?? null,
+      point.acquisitionSequence ?? null,
+      point.monotonicMs ?? null,
+      point.skippedScheduleCount ?? null,
     ];
   });
 }

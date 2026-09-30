@@ -58,6 +58,15 @@ bool retentionCatalogIsValid(const RetentionSegment* segments, size_t count) {
   return true;
 }
 
+uint32_t newestInterruptedSession(const RetentionSegment* segments, size_t count) {
+  if (!retentionCatalogIsValid(segments, count)) return 0;
+  const RetentionSegment* newest = &segments[0];
+  for (size_t index = 1; index < count; ++index) {
+    if (segments[index].id > newest->id) newest = &segments[index];
+  }
+  return newest->finishReason == RetentionFinishReason::Interrupted ? newest->id : 0;
+}
+
 bool planOldestCompleteRun(const RetentionSegment* segments, size_t count,
                            const uint32_t* protectedIds,
                            size_t protectedCount, RetentionPlan* plan) {

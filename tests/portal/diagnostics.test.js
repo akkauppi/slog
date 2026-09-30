@@ -13,6 +13,14 @@ import {
 const ENTRY_TIME = new Date("2026-08-18T08:09:10.000Z");
 const EXPORT_TIME = new Date("2026-08-18T08:10:11.000Z");
 
+test("radio pairing secrets never enter diagnostics or exports", () => {
+  const secret = 'ab'.repeat(60);
+  const buffer = new DiagnosticBuffer();
+  buffer.record({ direction: 'tx', line: `RADIO ${secret}` });
+  assert.doesNotMatch(buffer.text(), new RegExp(secret));
+  assert.match(buffer.entries[0].line, /private pairing configuration redacted/);
+});
+
 test("diagnostic buffer retains only the newest 300 entries", () => {
   const buffer = new DiagnosticBuffer();
   for (let index = 0; index < 305; index += 1) {

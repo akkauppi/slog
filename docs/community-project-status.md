@@ -96,5 +96,6 @@ built from a push to `main`.
 
 All later work must preserve ROM-based sensor identity, the fixed eight-probe
 geometry, 10-second sampling, power-cut recovery, CRC validation, explicit
-unknown power gaps, manual filesystem formatting, disabled Wi-Fi, RTC
-diagnostics, and the committed partition layout.
+unknown power gaps, blank-only automatic storage initialization, challenged
+manual filesystem formatting, disabled Wi-Fi, RTC diagnostics, and the
+committed partition layout.

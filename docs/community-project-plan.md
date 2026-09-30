@@ -52,9 +52,10 @@ properties:
 - Valid CRC-protected blocks survive incomplete writes. Interruption and
   unknown-duration power gaps remain explicit, and analysis never invents the
   missing time.
-- LittleFS is never formatted automatically. Raw `.slog` files remain the
-  source of truth, while device flash is explicitly a bounded rolling store and
-  not the permanent archive.
+- Only a completely erased LittleFS partition may be initialized automatically.
+  Raw `.slog` files remain the source of truth, while device flash is explicitly
+  a bounded rolling store and not the permanent archive. Nonblank or ambiguous
+  storage is never formatted automatically.
 - Immediately before starting a new session, the logger requires a 128 KiB
   full-session reserve. It may make that reserve only by retiring the oldest
   logical run whose linked segments all have fully CRC-valid contents and valid
@@ -234,13 +235,14 @@ The console will provide:
   image and SHA-256, selects it only after a complete transfer, and uses ESP-IDF
   rollback for a failed new application. Updates are rejected during an active
   session and never enable Wi-Fi.
-- A guided probe-discovery and mapping wizard, configuration backup, explicit
-  first-use filesystem initialization, and a preflight health check.
+- A guided probe-discovery and mapping wizard, configuration backup, blank-only
+  automatic first-use filesystem initialization, challenged new-board recovery,
+  and a preflight health check.
 - Session listing and retrieval. A file is offered for saving only after the
   declared byte count and transfer CRC agree. Whole-run removal remains guarded
   by verified preservation or an explicit unverified-copy override, exact-byte
   revalidation, continuation protection, and newest-first ordering. The portal
-  has no format or core-dump-erase control.
+  has a challenged session-storage erase control but no core-dump-erase control.
 
 The primary outcome of this slice is a safe browser path from released firmware
 to preserved and locally analyzed `.slog` files. Publishing remains a separate
@@ -482,5 +484,7 @@ port still requires explicit user intent.
   experience survey. Exact-location maps and health claims are also excluded.
 - Retention anywhere except the bounded pre-start policy: no deletion of an
   active, interrupted, ambiguous, or probable-continuation run, and no deletion
-  when its catalog or persistent audit cannot be trusted. Automatic filesystem
-  formatting and other unattended destructive recovery remain excluded.
+  when its catalog or persistent audit cannot be trusted. Automatic formatting
+  of nonblank storage and other unattended destructive recovery remain excluded.
+  A completely erased partition may be initialized automatically; intentional
+  erasure requires an explicit device challenge.

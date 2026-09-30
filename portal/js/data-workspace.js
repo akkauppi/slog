@@ -19,7 +19,8 @@ import {
 } from "./session-export.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const VIEW_NAMES = Object.freeze(["prepare", "records", "analyze"]);
+const VIEW_NAMES = Object.freeze(["prepare", "radio", "records", "analyze"]);
+const FORMAT_CONFIRMATION = "ERASE SLOG STORAGE";
 
 function requiredElement(document, id) {
   const value = document.getElementById(id);
@@ -260,7 +261,7 @@ function friendlyError(error) {
       retention_catalog_invalid: "The logger's run list is invalid or incomplete. You can still download raw files, but removal is disabled.",
       retention_pending: "Automatic retention is incomplete. Reconnect or restart the logger so it can finish before manual removal.",
       continuation_state_invalid: "Continuation protection does not match the record catalog. Nothing further was removed.",
-      fs_unavailable: "The logger filesystem is unavailable. It is not formatted automatically.",
+      fs_unavailable: "The logger filesystem is unavailable. Existing data was not formatted automatically.",
       not_found: "The record is no longer present on the logger.",
     };
     return messages[error.code] ?? error.message;
@@ -311,6 +312,7 @@ export class DataWorkspace {
     this.analysisRuns = [];
     this.selectedRun = 0;
     this.pendingRemoval = null;
+    this.pendingFormatChallenge = null;
 
     this.views = new Map(
       VIEW_NAMES.map((name) => [name, requiredElement(document, `${name}-view`)]),
@@ -329,6 +331,7 @@ export class DataWorkspace {
     this.recordsCount = requiredElement(document, "records-count");
     this.recordsCatalog = requiredElement(document, "records-catalog");
     this.fileInput = requiredElement(document, "analysis-files");
+    this.exampleButton = requiredElement(document, "analysis-example");
     this.analysisMessage = requiredElement(document, "analysis-message");
     this.analysisIssues = requiredElement(document, "analysis-group-issues");
     this.analysisOutput = requiredElement(document, "analysis-output");
@@ -347,13 +350,31 @@ export class DataWorkspace {
     this.removeDescription = requiredElement(document, "remove-run-description");
     this.removeWarning = requiredElement(document, "remove-run-warning");
     this.confirmRemoveButton = requiredElement(document, "confirm-remove-run");
+    this.storageDangerZone = requiredElement(document, "storage-danger-zone");
+    this.storageDangerDescription = requiredElement(document, "storage-danger-description");
+    this.storageFormat = requiredElement(document, "storage-format");
+    this.formatDialog = requiredElement(document, "format-storage-dialog");
+    this.formatDescription = requiredElement(document, "format-storage-description");
+    this.formatChallenge = requiredElement(document, "format-storage-challenge");
+    this.formatConfirmation = requiredElement(document, "format-storage-confirmation");
+    this.confirmFormatButton = requiredElement(document, "confirm-format-storage");
 
     for (const button of this.navButtons) {
       button.addEventListener("click", () => this.requestView(button.dataset.portalView));
     }
     this.recordsConnect.addEventListener("click", () => void this.connect());
     this.recordsRefresh.addEventListener("click", () => void this.refresh());
+    this.storageFormat.addEventListener("click", () => this.openFormatDialog());
+    this.formatConfirmation.addEventListener("input", () => {
+      this.confirmFormatButton.disabled = this.formatConfirmation.value !== FORMAT_CONFIRMATION;
+    });
+    this.confirmFormatButton.addEventListener("click", (event) => {
+      if (this.pendingFormatChallenge) return;
+      event.preventDefault();
+      void this.requestFormatChallenge();
+    });
     this.fileInput.addEventListener("change", () => void this.openFiles(this.fileInput.files));
+    this.exampleButton.addEventListener("click", () => void this.openExample());
     this.runSelect.addEventListener("change", () => {
       this.selectedRun = Number(this.runSelect.value);
       this.renderAnalysis();
@@ -373,11 +394,17 @@ export class DataWorkspace {
       }
       this.pendingRemoval = null;
     });
+    this.formatDialog.addEventListener("close", () => {
+      const shouldConfirm = this.formatDialog.returnValue === "confirm" && this.pendingFormatChallenge;
+      const token = this.pendingFormatChallenge?.token;
+      this.pendingFormatChallenge = null;
+      if (shouldConfirm) void this.confirmFormat(token);
+    });
     this.updateControls();
   }
 
   get unsafeToLeave() {
-    return this.operation === "transfer" || this.operation === "delete";
+    return this.operation === "transfer" || this.operation === "delete" || this.operation === "format";
   }
 
   requestView(name, { focus = true } = {}) {
@@ -488,13 +515,23 @@ export class DataWorkspace {
     this.chains = groupCatalogSessions(catalog);
     this.renderStorage();
     this.renderCatalog();
-    if (status.active) {
+    if (status.recordingFault === true || status.recordingOk === false) {
+      setStatus(this.recordsMessage,
+        "The logger reports a recording failure or unavailable recording storage. Preserve existing raw files before troubleshooting; free space alone does not mean recording is healthy.",
+        "error");
+    } else if (status.active) {
       setStatus(
         this.recordsMessage,
         `Session ${status.activeSessionId} is recording. You can view the file list, but downloads and removal stay disabled until recording ends.`,
       );
     } else if (!status.filesystemReady) {
-      setStatus(this.recordsMessage, "The logger filesystem is unavailable and was not formatted.", "error");
+      setStatus(
+        this.recordsMessage,
+        status.storageState === "blank"
+          ? "The logger storage is blank and could not be initialized automatically."
+          : "The logger filesystem is unavailable. Existing data was not formatted.",
+        "error",
+      );
     } else {
       setStatus(this.recordsMessage, `Loaded ${catalog.length} stored segment${catalog.length === 1 ? "" : "s"}.`, "success");
     }
@@ -507,6 +544,13 @@ export class DataWorkspace {
     this.recordsActive.textContent = status.active
       ? `Session ${status.activeSessionId} active`
       : "Idle";
+    if (status.recordingFault === true || status.recordingOk === false) {
+      this.recordsActive.textContent += " · saving unavailable";
+    } else if (status.recordingOk === null || status.recordingOk === undefined) {
+      this.recordsActive.textContent += " · recording health not reported";
+    } else {
+      this.recordsActive.textContent += " · saving healthy";
+    }
     this.recordsStorage.textContent = status.filesystemReady
       ? `${formatBytes(status.freeBytes)} free of ${formatBytes(status.totalBytes)}`
       : "Filesystem unavailable";
@@ -515,6 +559,17 @@ export class DataWorkspace {
       : `${formatBytes(status.retention.reserveRequiredBytes)} not available`;
     this.recordsReserve.dataset.state = status.retention.reserveOk ? "ready" : "attention";
     this.recordsRetention.textContent = `${status.retention.deletedRuns} run${status.retention.deletedRuns === 1 ? "" : "s"} · ${status.retention.deletedSegments} segment${status.retention.deletedSegments === 1 ? "" : "s"} retired`;
+
+    const formatAvailable = Boolean(this.manager && status.formatCapability >= 2 && !status.active);
+    this.storageDangerZone.hidden = !formatAvailable;
+    if (formatAvailable) {
+      this.storageDangerDescription.textContent = status.storageState === "ready"
+        ? "For a deliberate reset, this action erases every session file. Use it only after preserving the records you need."
+        : status.storageState === "blank"
+          ? "The partition is proven blank, but automatic initialization did not complete. Initialize it here after confirming this is a new or intentionally erased board."
+          : "The filesystem could not be mounted. If this is an existing logger, stop and preserve it for recovery. Only choose the erase path for a new or intentionally erased board.";
+      this.storageFormat.disabled = Boolean(this.operation);
+    }
 
     const notes = [];
     if (status.retention.pendingRun) {
@@ -544,6 +599,49 @@ export class DataWorkspace {
     }
     this.retentionNote.textContent = notes.join(" ");
     this.retentionNote.hidden = notes.length === 0;
+  }
+
+  openFormatDialog() {
+    if (!this.manager || !this.status || this.status.active || this.status.formatCapability < 2 || this.operation) return;
+    this.pendingFormatChallenge = null;
+    this.formatConfirmation.value = "";
+    this.formatChallenge.hidden = true;
+    this.formatChallenge.textContent = "";
+    this.confirmFormatButton.disabled = true;
+    this.confirmFormatButton.textContent = "Request erase challenge";
+    this.formatDescription.textContent = this.status.storageState === "ready"
+      ? `The logger currently uses ${formatBytes(this.status.usedBytes)} for session storage. Every stored .slog file will be permanently deleted.`
+      : "The logger storage is not usable. Formatting may recover a new or intentionally erased board, but it permanently destroys any data in the session partition.";
+    this.formatDialog.returnValue = "";
+    this.formatDialog.showModal();
+  }
+
+  async requestFormatChallenge() {
+    if (!this.manager || this.operation) return;
+    try {
+      const challenge = await this.manager.prepareFormat();
+      this.pendingFormatChallenge = challenge;
+      this.formatChallenge.hidden = false;
+      this.formatChallenge.textContent = `The device reports ${formatBytes(challenge.usedBytes)} currently used. The final erase command is valid for about ${Math.round(challenge.expiresMs / 1000)} seconds.`;
+      this.confirmFormatButton.textContent = "Erase session storage";
+      setStatus(this.recordsMessage, "Challenge received. Review the warning and confirm the erase.");
+    } catch (error) {
+      setStatus(this.recordsMessage, friendlyError(error), "error");
+    }
+  }
+
+  async confirmFormat(token) {
+    this.beginOperation("format");
+    try {
+      await this.manager.confirmFormat(token);
+      setStatus(this.recordsMessage, "Session storage was formatted. Probe configuration was preserved.", "success");
+      this.formatDialog.close();
+      await this.refreshUnlocked();
+    } catch (error) {
+      setStatus(this.recordsMessage, friendlyError(error), "error");
+    } finally {
+      this.endOperation();
+    }
   }
 
   emptyState(text) {
@@ -768,6 +866,7 @@ export class DataWorkspace {
     this.recordsConnect.disabled = Boolean(this.operation) || !this.environmentSupported();
     this.recordsRefresh.hidden = !connected;
     this.recordsRefresh.disabled = Boolean(this.operation);
+    if (this.storageFormat) this.storageFormat.disabled = Boolean(this.operation);
     for (const button of this.navButtons) button.disabled = Boolean(this.operation);
   }
 
@@ -1010,6 +1109,25 @@ export class DataWorkspace {
     }
   }
 
+  async openExample() {
+    if (this.exampleButton.disabled) return;
+    this.exampleButton.disabled = true;
+    try {
+      const files = await Promise.all([5, 6, 7].map(async id => {
+        const name = `session-${id}.slog`;
+        const response = await this.window.fetch(`./examples/preheated-electric-sauna/${name}`);
+        if (!response.ok) throw new Error(`Example download failed (${response.status}).`);
+        const bytes = await response.arrayBuffer();
+        return { name, size: bytes.byteLength, arrayBuffer: async () => bytes };
+      }));
+      await this.openFiles(files);
+    } catch (error) {
+      setStatus(this.analysisMessage, friendlyError(error), "error");
+    } finally {
+      this.exampleButton.disabled = false;
+    }
+  }
+
   async openFiles(fileList) {
     const files = [...(fileList ?? [])];
     if (files.length === 0) return;
@@ -1181,7 +1299,7 @@ export class DataWorkspace {
     }
 
     this.finishAnalysisLoad(
-      `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"}: ${grouped.runs.length} complete run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} ungrouped segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
+      `Opened ${sessions.length} checked segment${sessions.length === 1 ? "" : "s"}: ${grouped.runs.length} grouped run${grouped.runs.length === 1 ? "" : "s"} and ${this.analysisRuns.length - grouped.runs.length} ungrouped segment${this.analysisRuns.length - grouped.runs.length === 1 ? "" : "s"}.`,
     );
   }
 

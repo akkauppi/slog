@@ -31,6 +31,10 @@ struct RetentionPlan {
   uint32_t sessionIds[kMaxRetentionSegments];
 };
 
+// Only the newest catalog segment may be a restart candidate. A completed
+// successor or newer completed run permanently supersedes an older interruption.
+uint32_t newestInterruptedSession(const RetentionSegment* segments, size_t count);
+
 bool retentionCatalogIsValid(const RetentionSegment* segments, size_t count);
 
 // Select the complete logical run with the smallest root ID. Every segment in

@@ -413,3 +413,18 @@ test("a newly chosen records port closes after identity verification fails", asy
     /async function connectRecordsLogger\(\)[\s\S]*?openedForRecords = true[\s\S]*?requireCompatibleDevice\(await recordsClient\.info\(\)\)[\s\S]*?catch \(error\) \{[\s\S]*?if \(openedForRecords\) \{[\s\S]*?await discardNewRecordsTransport\(\);/,
   );
 });
+
+test('recording failure stays visible while idle raw downloads remain available', () => {
+  const node=()=>({textContent:'',hidden:false,dataset:{}});
+  const context={status:{active:false,recordingOk:false,recordingFault:true,filesystemReady:true,
+    freeBytes:1000,totalBytes:2000,formatCapability:0,continuationPendingSessionId:0,
+    retention:{reserveOk:true,reserveRequiredBytes:100,deletedRuns:0,deletedSegments:0,auditOk:true}},
+    manager:{},operation:null,storageSummary:node(),recordsActive:node(),recordsStorage:node(),
+    recordsReserve:node(),recordsRetention:node(),storageDangerZone:node(),retentionNote:node()};
+  DataWorkspace.prototype.renderStorage.call(context);
+  assert.match(context.recordsActive.textContent,/saving unavailable/);
+  assert.equal(DataWorkspace.prototype.canTransfer.call(context),true);
+  context.status.recordingOk=null;context.status.recordingFault=null;
+  DataWorkspace.prototype.renderStorage.call(context);
+  assert.match(context.recordsActive.textContent,/health not reported/);
+});

@@ -55,24 +55,75 @@ def build_run(sessions: Iterable[Any]) -> Run:
     points: list[Point] = []
     breaks: list[float] = []
     previous_end: float | None = None
+    previous_segment_had_points = False
+    ids: set[int] = set()
     for segment, session in enumerate(ordered):
+        if session.session_id in ids:
+            raise ValueError(f"session {session.session_id} appears more than once in the run")
+        ids.add(session.session_id)
+        if segment and session.continuation_of != ordered[segment - 1].session_id:
+            raise ValueError(f"session {session.session_id} does not continue its predecessor")
         layout = [(sensor.rom, sensor.relative_height_cm) for sensor in session.sensors]
         if layout != reference:
             raise ValueError(f"session {session.session_id} has a different sensor layout")
         warnings.extend(f"session {session.session_id}: {warning}" for warning in session.warnings)
         if not session.samples:
             warnings.append(f"session {session.session_id}: no committed samples")
+            previous_segment_had_points = False
             continue
+        predecessor = ordered[segment - 1] if segment else None
+        if predecessor and session.version == 3 and predecessor.version == 3 and session.source_id != predecessor.source_id:
+            raise ValueError("continuation crosses device identities")
+        delay = session.continuation_delay_seconds
+        proven_continuation = (
+            previous_end is not None and previous_segment_had_points
+            and session.version >= 2
+            and session.continuation_kind == "max_duration_sample_anchored"
+            and isinstance(delay, int) and 0 < delay <= 255
+            and delay >= session.start_hold_seconds
+            and predecessor.version >= 2 and predecessor.finalized
+            and predecessor.finish_reason == "max_duration"
+            and predecessor.footer_record_count == len(predecessor.samples)
+            and predecessor.final_relative_seconds == predecessor.samples[-1].relative_seconds
+            and ((session.version == 3 and predecessor.version == 3
+                  and session.source_id == predecessor.source_id
+                  and session.boot_nonce == predecessor.boot_nonce)
+                 or (session.version == 2 and predecessor.version == 2
+                     and predecessor.boot_id != 0 and predecessor.boot_id == session.boot_id))
+            and predecessor.sample_interval_ms == session.sample_interval_ms
+        )
         first = session.samples[0].relative_seconds
-        offset = 0.0 if previous_end is None else previous_end - first
-        if previous_end is not None:
+        offset = 0.0
+        if proven_continuation:
+            offset = previous_end + delay
+            if session.version == 3:
+                offset = previous_end + (int(session.samples[0].monotonic_ms) - int(predecessor.samples[-1].monotonic_ms)) / 1000 - first
+        elif previous_end is not None:
+            offset = previous_end - first
             breaks.append(previous_end)
+        omitted = 0
+        appended = 0
         for sample in session.samples:
+            local_seconds = sample.relative_seconds
+            if session.version == 3:
+                local_seconds = first + (int(sample.monotonic_ms) - int(session.samples[0].monotonic_ms)) / 1000
+            observed_seconds = local_seconds + offset
+            if proven_continuation and observed_seconds <= previous_end:
+                omitted += 1
+                continue
             points.append(Point(
-                sample.relative_seconds + offset, segment, sample.relative_seconds,
+                observed_seconds, segment, sample.relative_seconds,
                 sample.temperatures_c, sample.chip_temperature_c, sample.status_flags,
             ))
-        previous_end = points[-1].observed_seconds
+            appended += 1
+        if omitted:
+            warnings.append(
+                f"session {session.session_id}: omitted {omitted} overlapping "
+                "max-duration pre-trigger records from derived time"
+            )
+        if points:
+            previous_end = points[-1].observed_seconds
+        previous_segment_had_points = appended > 0
     return Run(ordered, tuple(points), tuple(breaks), tuple(warnings))
 
 

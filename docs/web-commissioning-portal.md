@@ -6,9 +6,23 @@ connected jobs:
 1. install the repository's prepared firmware release on a XIAO ESP32-C3; and
 2. commission the eight ordered temperature probes and verify their stored map.
 
-It does not accept arbitrary firmware, perform routine OTA updates, erase the
-whole flash, read or delete sauna logs, analyze data, or publish records. Those
-boundaries keep the first community-facing tool small enough to audit and test.
+It also preserves and analyzes raw recordings in **Records** and **Analyze**.
+**Radio (optional)** pairs a separate receiver for live temperatures and exposes
+logger wake/heartbeat controls. Radio is not needed for recording, USB download
+or analysis. All sections share one USB connection and block navigation or
+updates during managed operations. Arbitrary firmware, whole-chip erase, routine
+OTA and record submission remain outside the portal.
+
+## Current release status
+
+The October release brings V3 identity-aware records, retention/preservation
+fixes, optional integrated radio pairing, power controls and the preheated
+electric-sauna example to Pages. Records displays recording failures independently
+of filesystem readiness. Sleeping radios are explained as intentional standby,
+and silent USB identity checks offer recovery guidance only for a cold, idle logger.
+The [28 September audit](field-readiness-2026-09-28.md) remains the historical
+hardware baseline: browser USB installation and recovery still require their
+own physical acceptance. Publishing a tested bundle does not replace that test.
 
 ## Requirements
 

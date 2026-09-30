@@ -5,10 +5,10 @@ import {
   ProtocolTimeoutError,
 } from "./serial-transport.js";
 
-// A firmware segment is bounded to ~111 KiB. Keep the browser bound aligned
-// with the 128 KiB parser envelope so every accepted transfer can finish well
+// A firmware segment is bounded to ~177 KiB. Keep the browser bound aligned
+// with the 256 KiB parser envelope so every accepted transfer can finish well
 // inside the overall 115200-baud timeout.
-export const DEFAULT_MAX_LOG_BYTES = 128 * 1024;
+export const DEFAULT_MAX_LOG_BYTES = 256 * 1024;
 export const DEFAULT_LIST_INACTIVITY_TIMEOUT_MS = 8000;
 export const DEFAULT_LIST_OVERALL_TIMEOUT_MS = 60_000;
 export const DEFAULT_DOWNLOAD_INACTIVITY_TIMEOUT_MS = 8000;
@@ -232,6 +232,15 @@ export function parseLogStatus(value) {
   const commissioning = booleanField(message, "commissioning");
   const restartRequired = booleanField(message, "restart_required");
   const protocol = unsigned(message, "protocol");
+  const storageState = Object.hasOwn(message.fields, "storage_state")
+    ? required(message, "storage_state")
+    : filesystemReady ? "ready" : "unavailable";
+  const storageInit = Object.hasOwn(message.fields, "storage_init")
+    ? required(message, "storage_init")
+    : "none";
+  const formatCapability = Object.hasOwn(message.fields, "format_capability")
+    ? unsigned(message, "format_capability")
+    : 0;
   const continuationPendingSessionId = Object.hasOwn(
     message.fields,
     "continuation_pending",
@@ -260,6 +269,15 @@ export function parseLogStatus(value) {
   if (protocol !== 1) {
     throw new ProtocolError(`unsupported log protocol: ${protocol}`);
   }
+  if (!["ready", "blank", "unavailable"].includes(storageState)) {
+    throw new ProtocolError(`unsupported storage state: ${JSON.stringify(storageState)}`);
+  }
+  if (filesystemReady !== (storageState === "ready")) {
+    throw new ProtocolError("LOG_STATUS storage state disagrees with fs");
+  }
+  if (!["existing", "auto", "manual", "none"].includes(storageInit)) {
+    throw new ProtocolError(`unsupported storage initialization: ${JSON.stringify(storageInit)}`);
+  }
 
   return freezeRecord({
     filesystemReady,
@@ -275,6 +293,13 @@ export function parseLogStatus(value) {
     commissioning,
     restartRequired,
     protocol,
+    storageState,
+    storageInit,
+    formatCapability,
+    recordingOk: Object.hasOwn(message.fields, "recording_ok")
+      ? booleanField(message, "recording_ok") : null,
+    recordingFault: Object.hasOwn(message.fields, "recording_fault")
+      ? booleanField(message, "recording_fault") : null,
     validSensors: unsigned(message, "sensors"),
     retention: {
       policy: retentionPolicy,
@@ -292,6 +317,23 @@ export function parseLogStatus(value) {
       auditOk: booleanField(message, "retention_audit_ok"),
       lastRefusal: required(message, "retention_last_refusal"),
     },
+  });
+}
+
+export function parseFormatChallenge(value) {
+  const message = asLogMessage(value);
+  if (message.name !== "LOG_FORMAT_CHALLENGE") {
+    throw new ProtocolError(`expected LOG_FORMAT_CHALLENGE, found ${message.name}`);
+  }
+  const token = required(message, "token").toUpperCase();
+  if (!/^[0-9A-F]{8}$/.test(token)) {
+    throw new ProtocolError("invalid format challenge token");
+  }
+  return Object.freeze({
+    token,
+    expiresMs: unsigned(message, "expires_ms"),
+    filesystemReady: booleanField(message, "fs"),
+    usedBytes: unsigned(message, "used"),
   });
 }
 
@@ -368,7 +410,7 @@ export function inspectContinuationCatalog(sessions) {
     if (entry.bytes === 0) {
       issues.push(Object.freeze({ code: "empty_session", sessionId: entry.id }));
     }
-    if (entry.version !== 1 && entry.version !== 2) {
+    if (entry.version !== 1 && entry.version !== 2 && entry.version !== 3) {
       issues.push(Object.freeze({
         code: "unsupported_version",
         sessionId: entry.id,
@@ -558,6 +600,36 @@ export class LogManager {
 
   status() {
     return this._enqueue(() => this._statusUnlocked());
+  }
+
+  prepareFormat() {
+    return this._enqueue(async () => {
+      const status = await this._statusUnlocked();
+      if (status.active) throw new LogDeviceError("active_session");
+      if (status.formatCapability < 2) {
+        throw new LogDeviceError("format_capability_required", "update the logger firmware before formatting storage");
+      }
+      await this.transport.writeLine("LOG FORMAT PREPARE");
+      return parseFormatChallenge(
+        await this._readSingleLogMessage("LOG_FORMAT_CHALLENGE", "LOG FORMAT PREPARE"),
+      );
+    });
+  }
+
+  confirmFormat(token) {
+    if (typeof token !== "string" || !/^[0-9A-Fa-f]{8}$/.test(token)) {
+      return Promise.reject(new ProtocolError("invalid format challenge token"));
+    }
+    return this._enqueue(async () => {
+      const status = await this._statusUnlocked();
+      if (status.active) throw new LogDeviceError("active_session");
+      await this.transport.writeLine(`LOG FORMAT CONFIRM token=${token}`);
+      const message = await this._readSingleLogMessage("LOG_FORMAT", "LOG FORMAT CONFIRM");
+      if (unsigned(message, "ok", 1) !== 1) {
+        throw new LogDeviceError("format_failed");
+      }
+      return true;
+    });
   }
 
   list() {

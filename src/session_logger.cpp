@@ -1,5 +1,9 @@
 #include "session_logger.h"
 
+#include "session_store.h"
+#include "slog_v3.h"
+#include "radio_config.h"
+
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <esp_core_dump.h>
@@ -117,6 +121,7 @@ struct __attribute__((packed)) RetentionPendingV1 {
   uint32_t crc;
 };
 
+static_assert(sizeof(SAUNA_FIRMWARE_VERSION) <= 16, "V3 firmware version must fit 15 ASCII characters");
 static_assert(sizeof(SessionHeaderV1) == 130, "v1 log header layout changed");
 static_assert(sizeof(SessionHeaderV2) == 142, "v2 log header layout changed");
 static_assert(sizeof(StoredRecordV1) == 21, "v1 record layout changed");
@@ -141,10 +146,19 @@ constexpr size_t kMaximumEncodedBlocks =
     1 + (kMaximumPostTriggerRecords + kRecordsPerBlock - 1) /
             kRecordsPerBlock;
 constexpr size_t kMaximumEncodedSessionBytes =
-    sizeof(SessionHeaderV2) +
+    sauna_link::kSlogV3HeaderBytes +
     kMaximumEncodedBlocks * sizeof(BlockHeader) +
-    kMaximumEncodedRecords * sizeof(StoredRecordV2) + sizeof(SessionFooter);
+    kMaximumEncodedRecords * sauna_link::kSlogV3RecordBytes + sizeof(SessionFooter);
 constexpr size_t kFilesystemReserveMarginBytes = 4 * 4096;
+
+// New files are published only after both header and pretrigger are durable.
+String storePath(uint32_t id, bool staging = false) {
+  char path[64];
+  snprintf(path, sizeof(path), "/littlefs/%s/%08u.slog",
+           staging ? "staging" : "sessions", id);
+  return String(path);
+}
+
 
 uint8_t bitCount(uint8_t value) {
   uint8_t count = 0;
@@ -263,26 +277,92 @@ bool SessionLogger::begin() {
   resetReason_ = static_cast<uint8_t>(esp_reset_reason());
   Preferences preferences;
   if (preferences.begin("sauna", false)) {
-    bootId_ = preferences.getUInt("boot_id", 0) + 1;
-    preferences.putUInt("boot_id", bootId_);
+    const uint32_t previous = preferences.getUInt("boot_id", 0);
+    if (previous != UINT32_MAX) {
+      bootId_ = previous + 1;
+      bootCounterValid_ = preferences.putUInt("boot_id", bootId_) == sizeof(uint32_t) &&
+          preferences.getUInt("boot_id", 0) == bootId_;
+    }
+    if (!bootCounterValid_) bootId_ = 0;
     preferences.end();
   }
   loadRetentionState();
   return mountFilesystem();
 }
 
+bool SessionLogger::partitionIsErased() {
+  const esp_partition_t* partition = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
+  if (!partition || !partition->size) return false;
+
+  static uint8_t buffer[4096];
+  for (size_t offset = 0; offset < partition->size; offset += sizeof(buffer)) {
+    const size_t length = min(sizeof(buffer),
+                              static_cast<size_t>(partition->size - offset));
+    if (esp_partition_read(partition, offset, buffer, length) != ESP_OK)
+      return false;
+    for (size_t index = 0; index < length; ++index) {
+      if (buffer[index] != 0xFF) return false;
+    }
+    delay(1);
+  }
+  return true;
+}
+
+bool SessionLogger::formatFilesystem() {
+  LittleFS.end();
+  const bool formatted = LittleFS.format();
+  filesystemReady_ = formatted && LittleFS.begin(false);
+  if (!filesystemReady_) return false;
+
+  LittleFS.mkdir("/sessions");
+  const bool retentionReset = resetRetentionState();
+  ringHead_ = 0;
+  ringCount_ = 0;
+  pendingCount_ = 0;
+  startCandidate_ = false;
+  coolingCandidate_ = false;
+  continuationOf_ = 0;
+  continuationKind_ = ContinuationKind::None;
+  continuationAnchorAtMs_ = 0;
+  hotContinuationEligible_ = false;
+  storageState_ = StorageState::Ready;
+  storageInitialization_ = 2;  // explicit format
+  findInterruptedSession();
+  if (!retentionReset) Serial.println("logger_event=retention_audit_unavailable");
+  return true;
+}
+
 bool SessionLogger::mountFilesystem() {
   filesystemReady_ = false;
+  storageState_ = StorageState::Unavailable;
   for (uint8_t attempt = 0; attempt < 3 && !filesystemReady_; ++attempt) {
     LittleFS.end();
     filesystemReady_ = LittleFS.begin(false);
     if (!filesystemReady_) delay(250);
   }
   if (!filesystemReady_) {
-    Serial.println("logger_fs=unavailable action=retry_without_format");
+    const bool blank = partitionIsErased();
+    storageState_ = blank ? StorageState::Blank : StorageState::Unavailable;
+    if (blank && storageInitialization_ == 0) {
+      storageInitialization_ = 1;  // automatic format attempted
+      Serial.println("logger_event=storage_blank auto_init=1");
+      if (formatFilesystem()) {
+        storageInitialization_ = 1;  // distinguish automatic initialization
+        Serial.println("logger_event=storage_auto_initialized");
+        Serial.printf("logger_fs=ready total=%u used=%u\n", LittleFS.totalBytes(),
+                      LittleFS.usedBytes());
+        return true;
+      }
+      storageState_ = StorageState::Blank;
+    }
+    Serial.printf("logger_fs=unavailable action=retry_without_format blank=%u\n",
+                  storageState_ == StorageState::Blank);
     nextFilesystemRetryAt_ = millis() + kFilesystemRetryMs;
     return false;
   }
+  storageState_ = StorageState::Ready;
+  if (storageInitialization_ == 0) storageInitialization_ = 3;  // existing
   LittleFS.mkdir("/sessions");
   // A non-root pending deletion normally leaves its root on disk. If the
   // directory is empty, power disappeared after explicit LOG FORMAT erased the
@@ -327,25 +407,38 @@ void SessionLogger::pushRing(const SensorReading& reading) {
   if (ringCount_ < kPretriggerRecords) ++ringCount_;
 }
 
-void SessionLogger::addSample(const SensorReading& reading) {
+bool SessionLogger::addSample(const SensorReading& reading, bool coldCheck) {
   latestReading_ = reading;
   haveLatestReading_ = true;
   if (!filesystemReady_) {
     retryFilesystem(reading.capturedAtMs);
   }
-  if (!probeMappingReady_ || commissioningMode_) return;
+  if (!probeMappingReady_ || commissioningMode_) return false;
+  if (coldCheck && !active_) {
+    // Deliberate sparse polling must not masquerade as ten-second pre-trigger
+    // history. A healthy cold reading can still resolve interrupted-run state.
+    clearIdleWindow();
+    if (filesystemReady_) evaluateIdle(reading);
+    return true;
+  }
   // Keep the idle pre-trigger window in RAM through a transient mount outage.
   // An active session cannot coexist with an unavailable filesystem.
   pushRing(reading);
-  if (!filesystemReady_) return;
+  if (!filesystemReady_) return true;
   if (active_) {
     evaluateActive(reading);
   } else {
     evaluateIdle(reading);
   }
+  return true;
 }
 
 void SessionLogger::evaluateIdle(const SensorReading& reading) {
+  if (!normalCoolingRearm_.mayStart(reading.validMask, reading.centiC,
+                                   kStartCentiC)) {
+    startCandidate_ = false;
+    return;
+  }
   bool above = false;
   for (uint8_t index = 0; index < kSensorCount; ++index) {
     if ((reading.validMask & (1U << index)) &&
@@ -380,6 +473,7 @@ void SessionLogger::evaluateIdle(const SensorReading& reading) {
   if (static_cast<uint32_t>(reading.capturedAtMs - aboveStartSinceMs_) >=
       kStartHoldMs) {
     if (!startSession(reading)) {
+      recordingHealth_.fail();
       Serial.println("logger_event=start_failed");
     }
     startCandidate_ = false;
@@ -414,18 +508,16 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
     Serial.println("logger_event=start_failed reason=session_id_collision");
     return false;
   }
-  currentSessionId_ = nextId;
-  File file = LittleFS.open(sessionPath(currentSessionId_), FILE_WRITE);
-  if (!file) {
-    currentSessionId_ = 0;
+  if (!LittleFS.exists("/staging") && !LittleFS.mkdir("/staging")) {
+    Serial.println("logger_event=start_failed reason=staging_unavailable");
     return false;
   }
 
   SessionHeaderV2 header{};
   memcpy(header.magic, kHeaderMagic, sizeof(kHeaderMagic));
-  header.version = 2;
-  header.headerSize = sizeof(header);
-  header.sessionId = currentSessionId_;
+  header.version = 3;
+  header.headerSize = sauna_link::kSlogV3HeaderBytes;
+  header.sessionId = nextId;
   header.sampleIntervalMs = kSampleIntervalMs;
   header.pretriggerMs = kPretriggerRecords * kSampleIntervalMs;
   header.spacingCm = 20;
@@ -460,43 +552,47 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
     header.sensors[index].relativeHeightCm =
         probeRelativeHeightCm(probeMapping_.geometryId, index);
   }
-  header.headerCrc = crc32(reinterpret_cast<const uint8_t*>(&header),
-                           sizeof(header) - sizeof(header.headerCrc));
-  if (file.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) !=
-      sizeof(header)) {
-    file.close();
-    LittleFS.remove(sessionPath(currentSessionId_));
-    currentSessionId_ = 0;
+  // Do not mutate active/durable cursors until the complete initial file has
+  // been synchronized, closed, and atomically published.
+  const uint16_t oldest = (ringHead_ + kPretriggerRecords - ringCount_) %
+                          kPretriggerRecords;
+  uint8_t records[kRecordsPerBlock * sauna_link::kSlogV3RecordBytes]{};
+  BlockHeader block{};
+  if (!sauna_link::encodeSlogBlock(ring_, ringCount_, trigger.capturedAtMs, 0, &block, records, oldest, kPretriggerRecords))
+    return false;
+  uint8_t headerBytes[sauna_link::kSlogV3HeaderBytes]{};
+  sauna_link::encodeSlogHeader(header, sourceId_, bootNonce_, probeMapping_.generation, bootCounterValid_, headerBytes, SAUNA_SOURCE_COMMIT, SAUNA_FIRMWARE_VERSION);
+  const StoreChunk chunks[] = {
+      {headerBytes, sizeof(headerBytes)}, {&block, sizeof(block)},
+      {records, block.payloadBytes},
+  };
+  const StoreError created = recordingHealth_.create(
+      sessionStoreFiles(), storePath(nextId, true).c_str(),
+      storePath(nextId).c_str(), chunks, 3);
+  if (created != StoreError::None) {
+    Serial.printf("logger_event=start_failed reason=store_%s id=%u\n",
+                  storeErrorName(created), nextId);
+    // A rename failure may have an uncertain publication outcome. Recover by
+    // inspecting storage, never by rewriting this ID or guessing a parent.
+    findInterruptedSession();
     return false;
   }
-  file.flush();
-  file.close();
-
+  currentSessionId_ = nextId;
   if (retentionAuditAvailable_ && !recordHighestSessionId(currentSessionId_)) {
-    // The new header now preserves this ID on disk. Keep recording, but disable
-    // automatic retention until its persistent audit can be trusted again.
     retentionAuditAvailable_ = false;
     Serial.println("logger_event=retention_audit_unavailable");
   }
-
   active_ = true;
   triggerAtMs_ = trigger.capturedAtMs;
-  blockSequence_ = 0;
-  totalRecords_ = 0;
+  blockSequence_ = 1;
+  totalRecords_ = ringCount_;
   pendingCount_ = 0;
   coolingCandidate_ = false;
-  sessionPeakCentiC_ = INT16_MIN;
+  // The initial durable block includes the trigger and pre-trigger readings.
+  // Include those in the peak even if the probe cools before the next sample.
+  sessionPeakCentiC_ = peakInRecordedWindow(ring_, oldest, ringCount_,
+                                           kPretriggerRecords);
 
-  SensorReading ordered[kPretriggerRecords];
-  const uint16_t oldest = (ringHead_ + kPretriggerRecords - ringCount_) %
-                          kPretriggerRecords;
-  for (uint16_t index = 0; index < ringCount_; ++index) {
-    ordered[index] = ring_[(oldest + index) % kPretriggerRecords];
-  }
-  if (!appendBlock(ordered, ringCount_)) {
-    interruptActiveSession("pretrigger_write_failed");
-    return false;
-  }
   Serial.printf("logger_event=session_started id=%u pretrigger_records=%u\n",
                 currentSessionId_, ringCount_);
   continuationOf_ = 0;
@@ -508,12 +604,7 @@ bool SessionLogger::startSession(const SensorReading& trigger) {
 
 void SessionLogger::evaluateActive(const SensorReading& reading) {
   pending_[pendingCount_++] = reading;
-  int16_t hottest = INT16_MIN;
-  for (uint8_t index = 0; index < kSensorCount; ++index) {
-    if (reading.validMask & (1U << index)) {
-      hottest = max(hottest, reading.centiC[index]);
-    }
-  }
+  const int16_t hottest = hottestValidCentiC(reading.validMask, reading.centiC);
   if (hottest > sessionPeakCentiC_) sessionPeakCentiC_ = hottest;
 
   if (pendingCount_ == kRecordsPerBlock && !commitPending()) {
@@ -552,33 +643,18 @@ void SessionLogger::evaluateActive(const SensorReading& reading) {
 
 bool SessionLogger::appendBlock(const SensorReading* readings, uint16_t count) {
   if (!count) return true;
-  StoredRecordV2 records[kRecordsPerBlock];
-  for (uint16_t index = 0; index < count; ++index) {
-    records[index].relativeSeconds =
-        static_cast<int32_t>(readings[index].capturedAtMs - triggerAtMs_) / 1000;
-    memcpy(records[index].centiC, readings[index].centiC,
-           sizeof(records[index].centiC));
-    records[index].validMask = readings[index].validMask;
-    records[index].chipCentiC = readings[index].chipCentiC;
-    records[index].statusFlags = readings[index].statusFlags;
-  }
+  uint8_t records[kRecordsPerBlock * sauna_link::kSlogV3RecordBytes]{};
   BlockHeader block{};
-  block.magic = kBlockMagic;
-  block.sequence = blockSequence_;
-  block.recordCount = count;
-  block.payloadBytes = count * sizeof(StoredRecordV2);
-  block.payloadCrc = crc32(reinterpret_cast<const uint8_t*>(records),
-                           block.payloadBytes);
-  File file = LittleFS.open(sessionPath(currentSessionId_), FILE_APPEND);
-  if (!file) return false;
-  const bool written =
-      file.write(reinterpret_cast<const uint8_t*>(&block), sizeof(block)) ==
-          sizeof(block) &&
-      file.write(reinterpret_cast<const uint8_t*>(records), block.payloadBytes) ==
-          block.payloadBytes;
-  file.flush();
-  file.close();
-  if (!written) {
+  if (!sauna_link::encodeSlogBlock(readings, count, triggerAtMs_, blockSequence_, &block, records))
+    return false;
+  const StoreChunk chunks[] = {
+      {&block, sizeof(block)}, {records, block.payloadBytes},
+  };
+  const StoreError result = recordingHealth_.append(sessionStoreFiles(),
+      storePath(currentSessionId_).c_str(), chunks, 2);
+  if (result != StoreError::None) {
+    Serial.printf("logger_event=store_failed operation=block reason=%s\n",
+                  storeErrorName(result));
     return false;
   }
   ++blockSequence_;
@@ -599,13 +675,21 @@ bool SessionLogger::commitPending() {
 }
 
 bool SessionLogger::appendFooter(const void* footer, size_t size) {
-  File file = LittleFS.open(sessionPath(currentSessionId_), FILE_APPEND);
-  if (!file) return false;
-  const bool written =
-      file.write(reinterpret_cast<const uint8_t*>(footer), size) == size;
-  file.flush();
-  file.close();
-  return written;
+  if (size != sizeof(SessionFooter)) return false;
+  const auto& fields = *static_cast<const SessionFooter*>(footer);
+  uint8_t encoded[20]{};
+  sauna_link::putLe(encoded, fields.magic, 4); encoded[4]=fields.reason;
+  sauna_link::putLe(encoded+8, fields.totalRecords, 4);
+  sauna_link::putLe(encoded+12, fields.finalRelativeSeconds, 4);
+  sauna_link::putLe(encoded+16, crc32(encoded,16), 4);
+  const StoreChunk chunk{encoded, sizeof(encoded)};
+  const StoreError result = recordingHealth_.append(sessionStoreFiles(),
+      storePath(currentSessionId_).c_str(), &chunk, 1);
+  if (result != StoreError::None) {
+    Serial.printf("logger_event=store_failed operation=footer reason=%s\n",
+                  storeErrorName(result));
+  }
+  return result == StoreError::None;
 }
 
 void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds,
@@ -631,6 +715,10 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds,
                 currentSessionId_, static_cast<unsigned>(reason), totalRecords_);
   active_ = false;
   currentSessionId_ = 0;
+  if (reason == FinishReason::NormalCooling) {
+    normalCoolingRearm_.requireCold();
+    startCandidate_ = false;
+  }
   if (reason == FinishReason::MaxDuration) {
     continuationOf_ = finishedId;
     continuationKind_ = ContinuationKind::MaxDurationSampleAnchored;
@@ -642,6 +730,7 @@ void SessionLogger::finishSession(FinishReason reason, int32_t finalSeconds,
 
 void SessionLogger::interruptActiveSession(const char* reason) {
   if (!active_) return;
+  recordingHealth_.fail();
   const uint32_t interruptedId = currentSessionId_;
   Serial.printf("logger_event=session_interrupted id=%u reason=%s\n",
                 interruptedId, reason ? reason : "unknown");
@@ -664,12 +753,15 @@ String SessionLogger::sessionPath(uint32_t id) const {
 
 uint32_t SessionLogger::highestSessionId() {
   uint32_t highest = retentionHighestSessionId_;
-  File directory = LittleFS.open("/sessions");
-  File entry;
-  while ((entry = directory.openNextFile())) {
-    uint32_t id = 0;
-    if (parseSessionId(String(entry.name()), &id)) highest = max(highest, id);
-    entry.close();
+  // Preserve staged orphans and never reuse their identities after a reset.
+  for (const char* path : {"/sessions", "/staging"}) {
+    File directory = LittleFS.open(path);
+    File entry;
+    while ((entry = directory.openNextFile())) {
+      uint32_t id = 0;
+      if (parseSessionId(String(entry.name()), &id)) highest = max(highest, id);
+      entry.close();
+    }
   }
   return highest;
 }
@@ -751,10 +843,11 @@ bool SessionLogger::readSessionLink(File& file, uint32_t filenameId,
 
   uint32_t sessionId = 0;
   uint32_t linkedId = 0;
-  uint8_t headerBytes[sizeof(SessionHeaderV2)]{};
+  uint8_t headerBytes[sauna_link::kSlogV3HeaderBytes]{};
   const size_t expectedSize =
       prefix.version == 1 ? sizeof(SessionHeaderV1)
-                          : prefix.version == 2 ? sizeof(SessionHeaderV2) : 0;
+                          : prefix.version == 2 ? sizeof(SessionHeaderV2)
+                          : prefix.version == 3 ? sauna_link::kSlogV3HeaderBytes : 0;
   if (!expectedSize || prefix.headerSize != expectedSize) return false;
   file.seek(0);
   if (file.read(headerBytes, expectedSize) != expectedSize) return false;
@@ -764,6 +857,14 @@ bool SessionLogger::readSessionLink(File& file, uint32_t filenameId,
   if (storedCrc != crc32(headerBytes, expectedSize - sizeof(storedCrc)))
     return false;
 
+  if (prefix.version == 3) {
+    using sauna_link::getLe;
+    if (!getLe(headerBytes+138,8) || !getLe(headerBytes+146,8) ||
+        !getLe(headerBytes+154,4) || getLe(headerBytes+158,2)!=1 ||
+        headerBytes[160]!=255 || headerBytes[26]!=8 || headerBytes[27] ||
+        getLe(headerBytes+198,2) || (headerBytes[161]&~7) ||
+        bool(headerBytes[161]&1)!=bool(getLe(headerBytes+46,4))) return false;
+  }
   if (prefix.version == 1) {
     SessionHeaderV1 header{};
     memcpy(&header, headerBytes, sizeof(header));
@@ -791,9 +892,9 @@ bool SessionLogger::readRetentionSegment(File& file, uint32_t filenameId,
 
   FinishReason reason{};
   const size_t headerSize =
-      version == 1 ? sizeof(SessionHeaderV1) : sizeof(SessionHeaderV2);
+      version == 1 ? sizeof(SessionHeaderV1) : version == 2 ? sizeof(SessionHeaderV2) : sauna_link::kSlogV3HeaderBytes;
   const size_t recordSize =
-      version == 1 ? sizeof(StoredRecordV1) : sizeof(StoredRecordV2);
+      version == 1 ? sizeof(StoredRecordV1) : version == 2 ? sizeof(StoredRecordV2) : sauna_link::kSlogV3RecordBytes;
   const bool finalized = sessionFinalized(file, &reason);
   RetentionFinishReason retentionReason = RetentionFinishReason::Interrupted;
   if (finalized) {
@@ -849,7 +950,8 @@ bool SessionLogger::finalizedSessionContentsValid(File& file, size_t headerSize,
         file.position() + block.payloadBytes > footerOffset) {
       return false;
     }
-    uint32_t checksum = 0;
+    uint32_t checksum = recordSize == sauna_link::kSlogV3RecordBytes ?
+        crc32(reinterpret_cast<const uint8_t*>(&block),12) : 0;
     size_t remaining = block.payloadBytes;
     while (remaining) {
       const size_t count = min(sizeof(buffer), remaining);
@@ -1157,18 +1259,30 @@ const char* SessionLogger::retentionRefusalName() const {
 void SessionLogger::findInterruptedSession() {
   interruptedSessionId_ = 0;
   interruptedSessionWasHot_ = false;
+  hotContinuationEligible_ = false;
+  std::unique_ptr<RetentionSegment[]> segments(
+      new (std::nothrow) RetentionSegment[kMaxRetentionSegments]);
+  if (!segments) return;
+  size_t count = 0;
   File directory = LittleFS.open("/sessions");
   File entry;
   while ((entry = directory.openNextFile())) {
-    const String name = entry.name();
-    const int slash = name.lastIndexOf('/');
-    const uint32_t id = strtoul(name.substring(slash + 1).c_str(), nullptr, 10);
-    if (id > interruptedSessionId_ && !sessionFinalized(entry)) {
-      interruptedSessionId_ = id;
-      interruptedSessionWasHot_ = sessionEndsHot(entry);
+    uint32_t id = 0;
+    if (count == kMaxRetentionSegments ||
+        !parseSessionId(String(entry.name()), &id) ||
+        !readRetentionSegment(entry, id, &segments[count])) {
+      entry.close();
+      return;  // An unsafe catalog cannot establish a continuation.
     }
+    ++count;
     entry.close();
   }
+  const uint32_t candidate = newestInterruptedSession(segments.get(), count);
+  if (!candidate) return;
+  File file = LittleFS.open(sessionPath(candidate), FILE_READ);
+  if (!file) return;
+  interruptedSessionId_ = candidate;
+  interruptedSessionWasHot_ = sessionEndsHot(file);
   hotContinuationEligible_ = interruptedSessionWasHot_;
 }
 
@@ -1184,7 +1298,7 @@ bool SessionLogger::sessionLayoutMatches(const uint8_t* headerBytes,
     spacingCm = header.spacingCm;
     sensorCount = header.sensorCount;
     memcpy(descriptors, header.sensors, sizeof(descriptors));
-  } else if (version == 2) {
+  } else if (version == 2 || version == 3) {
     SessionHeaderV2 header{};
     memcpy(&header, headerBytes, sizeof(header));
     spacingCm = header.spacingCm;
@@ -1215,12 +1329,12 @@ bool SessionLogger::sessionEndsHot(File& file) {
   if (file.read(reinterpret_cast<uint8_t*>(&prefix), sizeof(prefix)) !=
           sizeof(prefix) ||
       memcmp(prefix.magic, kHeaderMagic, sizeof(kHeaderMagic)) != 0 ||
-      (prefix.version != 1 && prefix.version != 2) ||
-      prefix.headerSize > sizeof(SessionHeaderV2) ||
+      (prefix.version != 1 && prefix.version != 2 && prefix.version != 3) ||
+      prefix.headerSize > sauna_link::kSlogV3HeaderBytes ||
       prefix.headerSize < sizeof(prefix) + sizeof(uint32_t)) {
     return false;
   }
-  uint8_t headerBytes[sizeof(SessionHeaderV2)]{};
+  uint8_t headerBytes[sauna_link::kSlogV3HeaderBytes]{};
   file.seek(0);
   if (file.read(headerBytes, prefix.headerSize) != prefix.headerSize) return false;
   uint32_t storedHeaderCrc = 0;
@@ -1231,9 +1345,10 @@ bool SessionLogger::sessionEndsHot(File& file) {
     return false;
   }
   if (!sessionLayoutMatches(headerBytes, prefix.version)) return false;
+  if (prefix.version == 3 && sauna_link::getLe(headerBytes+138,8)!=sourceId_) return false;
 
   const size_t recordSize = prefix.version == 1 ? sizeof(StoredRecordV1)
-                                                 : sizeof(StoredRecordV2);
+                                                 : prefix.version == 2 ? sizeof(StoredRecordV2) : sauna_link::kSlogV3RecordBytes;
   int16_t lastHottest = INT16_MIN;
   file.seek(prefix.headerSize);
   while (file.position() + sizeof(BlockHeader) <= file.size()) {
@@ -1252,9 +1367,9 @@ bool SessionLogger::sessionEndsHot(File& file) {
         file.position() + block.payloadBytes > file.size()) {
       break;
     }
-    uint8_t payload[kRecordsPerBlock * sizeof(StoredRecordV2)]{};
+    uint8_t payload[kRecordsPerBlock * sauna_link::kSlogV3RecordBytes]{};
     if (file.read(payload, block.payloadBytes) != block.payloadBytes ||
-        crc32(payload, block.payloadBytes) != block.payloadCrc) {
+        (prefix.version == 3 ? sauna_link::slogBlockCrc(reinterpret_cast<const uint8_t*>(&block),payload,block.payloadBytes) : crc32(payload, block.payloadBytes)) != block.payloadCrc) {
       break;
     }
     for (uint16_t index = 0; index < block.recordCount; ++index) {
@@ -1336,34 +1451,63 @@ bool SessionLogger::processCommand(const String& command) {
   } else if (command == "LOG CRASH ERASE YES") {
     Serial.printf("LOG_CRASH_ERASE ok=%u\n",
                   esp_core_dump_image_erase() == ESP_OK);
-  } else if (command == "LOG FORMAT YES") {
-    if (active_) {
-      Serial.println("LOG_ERROR active_session");
-    } else {
-      LittleFS.end();
-      const bool formatted = LittleFS.format();
-      filesystemReady_ = formatted && LittleFS.begin(false);
-      bool retentionReset = false;
-      if (filesystemReady_) {
-        LittleFS.mkdir("/sessions");
-        retentionReset = resetRetentionState();
-        ringHead_ = 0;
-        ringCount_ = 0;
-        pendingCount_ = 0;
-        startCandidate_ = false;
-        coolingCandidate_ = false;
-        continuationOf_ = 0;
-        continuationKind_ = ContinuationKind::None;
-        continuationAnchorAtMs_ = 0;
-        hotContinuationEligible_ = false;
-        findInterruptedSession();
-      }
-      Serial.printf("LOG_FORMAT ok=%u retention_reset=%u\n", filesystemReady_,
-                    retentionReset);
-    }
+  } else if (command == "LOG FORMAT PREPARE") {
+    printFormatChallenge();
+  } else if (command.startsWith("LOG FORMAT CONFIRM token=")) {
+    confirmFormat(command);
   } else {
     return false;
   }
+  return true;
+}
+
+void SessionLogger::printFormatChallenge() {
+  if (active_) {
+    Serial.println("LOG_ERROR active_session");
+    return;
+  }
+  do {
+    formatChallenge_ = esp_random();
+  } while (!formatChallenge_);
+  formatChallengeExpiresAt_ = millis() + kFormatChallengeLifetimeMs;
+  Serial.printf("LOG_FORMAT_CHALLENGE token=%08lX expires_ms=%u fs=%u used=%u\n",
+                static_cast<unsigned long>(formatChallenge_),
+                kFormatChallengeLifetimeMs, filesystemReady_,
+                filesystemReady_ ? static_cast<unsigned>(LittleFS.usedBytes()) : 0);
+}
+
+bool SessionLogger::confirmFormat(const String& command) {
+  const String prefix = "LOG FORMAT CONFIRM token=";
+  const String tokenText = command.substring(prefix.length());
+  if (tokenText.length() != 8) {
+    Serial.println("LOG_ERROR format_confirmation_required");
+    return true;
+  }
+  for (size_t index = 0; index < tokenText.length(); ++index) {
+    const char character = tokenText[index];
+    const bool hexadecimal = (character >= '0' && character <= '9') ||
+                             (character >= 'A' && character <= 'F') ||
+                             (character >= 'a' && character <= 'f');
+    if (!hexadecimal) {
+      Serial.println("LOG_ERROR format_confirmation_required");
+      return true;
+    }
+  }
+  char* end = nullptr;
+  const uint32_t token = strtoul(tokenText.c_str(), &end, 16);
+  if (!end || *end || !formatChallenge_ || token != formatChallenge_ ||
+      static_cast<int32_t>(millis() - formatChallengeExpiresAt_) >= 0) {
+    formatChallenge_ = 0;
+    Serial.println("LOG_ERROR format_confirmation_required");
+    return true;
+  }
+  formatChallenge_ = 0;
+  if (active_) {
+    Serial.println("LOG_ERROR active_session");
+    return true;
+  }
+  const bool formatted = formatFilesystem();
+  Serial.printf("LOG_FORMAT ok=%u\n", formatted);
   return true;
 }
 
@@ -1384,6 +1528,17 @@ void SessionLogger::printStatus() {
   const uint32_t continuationPendingId =
       continuationOf_ ? continuationOf_
                       : (hotContinuationEligible_ ? interruptedSessionId_ : 0);
+  const char* storageState = storageState_ == StorageState::Ready
+                                 ? "ready"
+                                 : storageState_ == StorageState::Blank
+                                       ? "blank"
+                                       : "unavailable";
+  const char* storageInit = storageInitialization_ == 1
+                                ? "auto"
+                                : storageInitialization_ == 2
+                                      ? "manual"
+                                      : storageInitialization_ == 3 ? "existing"
+                                                                     : "none";
   Serial.printf("LOG_STATUS fs=%u active=%u id=%u total=%u used=%u free=%u "
                 "boot=%u reset=%u sensors=%u chip_centi_c=%d rtc_source=%u "
                 "rtc_hz=%u interrupted=%u continuation_pending=%u coredump=%u "
@@ -1397,7 +1552,9 @@ void SessionLogger::printStatus() {
                 "retention_last_refusal=%s protocol=1 config_state=%s "
                 "config_generation=%u active_generation=%u geometry=%s "
                 "discovered=%u mapped_valid=%u commissioning=%u "
-                "restart_required=%u valid_slots=%u\n",
+                "restart_required=%u valid_slots=%u storage_state=%s "
+                "storage_init=%s recording_ok=%u recording_fault=%u "
+                "format_capability=2\n",
                 filesystemReady_, active_, currentSessionId_,
                 filesystemReady_ ? LittleFS.totalBytes() : 0,
                 filesystemReady_ ? LittleFS.usedBytes() : 0,
@@ -1420,7 +1577,8 @@ void SessionLogger::printStatus() {
                 probeMappingReady_ ? probeMapping_.generation : 0,
                 probeMappingReady_ ? "column8_20cm_v1" : "none",
                 discoveredProbes_, mappedValidProbes_, commissioningMode_,
-                probeConfigRestartRequired_, probeConfigValidSlots_);
+                probeConfigRestartRequired_, probeConfigValidSlots_, storageState,
+                storageInit, recordingHealthy(), recordingHealth_.failed());
 }
 
 void SessionLogger::listSessions() {
@@ -1447,7 +1605,7 @@ void SessionLogger::listSessions() {
     const size_t read = entry.read(reinterpret_cast<uint8_t*>(&header), sizeof(header));
     if (read >= 12 && memcmp(header.magic, kHeaderMagic, sizeof(kHeaderMagic)) == 0) {
       version = header.version;
-      if (version == 2 && read == sizeof(header)) {
+      if ((version == 2 || version == 3) && read == sizeof(header)) {
         continuationOf = header.continuationOf;
         bootId = header.bootId;
         resetReason = header.resetReason;

@@ -1,5 +1,6 @@
 #include "retention_policy.h"
 
+#include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <string>
@@ -134,6 +135,18 @@ bool noCompletedRunMeansNoDeletion() {
 }  // namespace
 
 int main() {
+  using R = RetentionFinishReason;
+  const RetentionSegment closedChild[] = {{1, 0, R::Interrupted}, {2, 1, R::NormalCooling}};
+  const RetentionSegment newerRun[] = {{1, 0, R::Interrupted}, {3, 0, R::NormalCooling}};
+  const RetentionSegment openChild[] = {{3, 2, R::Interrupted}, {1, 0, R::Interrupted}, {2, 1, R::MaxDuration}};
+  const RetentionSegment branch[] = {{1, 0, R::Interrupted}, {2, 1, R::NormalCooling}, {3, 1, R::Interrupted}};
+  const RetentionSegment orphan[] = {{2, 1, R::Interrupted}};
+  assert(sauna::newestInterruptedSession(closedChild, 2) == 0);
+  assert(sauna::newestInterruptedSession(newerRun, 2) == 0);
+  assert(sauna::newestInterruptedSession(openChild, 3) == 3);
+  assert(sauna::newestInterruptedSession(branch, 3) == 0);
+  assert(sauna::newestInterruptedSession(orphan, 1) == 0);
+  assert(sauna::newestInterruptedSession(nullptr, 0) == 0);
   if (!completeLinkedRunIsOneCandidate()) return 1;
   if (!oldestCompleteRunWins()) return 1;
   if (!incompleteRunIsNotEligible()) return 1;

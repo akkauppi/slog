@@ -16,3 +16,8 @@ crash*.bin
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch/
+
+/radio-pairing/
+!/tests/fixtures/*.slog
+
+!/portal/examples/**/*.slog
