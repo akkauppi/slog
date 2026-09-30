@@ -1,7 +1,8 @@
 // CI verifies this value against the content of every APP_SHELL entry. A new
 // worker must never populate the cache still owned by an active transaction.
 const APP_SHELL_REVISION = "1aa1d9f40c00";
-const CACHE_NAME = `sauna-commissioning-${APP_SHELL_REVISION}`;
+// The policy version also isolates caches when only this worker changes.
+const CACHE_NAME = `sauna-commissioning-v2-${APP_SHELL_REVISION}`;
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -38,7 +39,12 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL.map(scopedUrl))),
+      // Pages gives HTML and modules a ten-minute HTTP cache lifetime. A new
+      // worker must fetch the deployed bytes, not copy the preceding release
+      // from the browser's still-fresh HTTP cache into its new offline cache.
+      .then((cache) => cache.addAll(APP_SHELL.map((path) =>
+        new Request(scopedUrl(path), { cache: "reload" }),
+      ))),
   );
 });
 
