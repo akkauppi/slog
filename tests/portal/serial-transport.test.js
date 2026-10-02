@@ -9,11 +9,19 @@ import {
   SerialTransportError,
   WebSerialTransport,
   serialPortOpenErrorMessage,
+  requestSerialPort,
 } from "../../portal/js/serial-transport.js";
 import { ROMS, configurationLines, infoLine, scanLines } from "./fixtures.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+test("missing Web Serial explains settings and policy before any device request", async () => {
+  await assert.rejects(requestSerialPort({}, null), error =>
+    error instanceof SerialTransportError &&
+    /DefaultSerialGuardSetting/.test(error.message) &&
+    /brave:\/\/flags/.test(error.message) && /Offline file analysis/.test(error.message));
+});
 
 class ScriptedPort {
   constructor(responses = new Map()) {
